@@ -1,0 +1,45 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+
+# === 预训练权重 / 大二进制（从各 release 下载，不入库）===
+*.pt
+*.ckpt
+*.pth
+*.bin
+*.safetensors
+# vendored 权重例外（如需保留某权重，用 !path/to/it 解除忽略）
+
+# === 训练 / 评测产物（自动生成）===
+uvt/docs/experiments/        # TR-2 每 run 自动生成的实验卡（04 §4，按需手动入库重要的）
+samples/
+outputs/
+wandb/
+runs/
+*.log
+fvd_report.csv
+
+# === 数据（不入库，按 07 §3 从各源头下载）===
+data/
+*.mp4
+*.avi
+*.mov
+*.zip
+
+# === 环境 / 编辑器 ===
+venv/
+.venv/
+env/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# === 临时 ===
+*.tmp
+.cache/
