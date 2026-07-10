@@ -1,0 +1,15 @@
+run_id: uvt_stage1_npu/stage1_b1
+git_sha: 98dc451b983f73b6e9a4c86d22028655cd9dbe32-dirty
+config_hash: fe32d5aed464879dd574498afd81d6752720e01bea51e8de762d438ea0014ff1
+data_version: imagenet-v1+openvid-256-v1
+seeds:
+  model: -1
+  data: 0
+adr_versions:
+- ADR-3@(0,6)
+- ADR-4'@iso
+- ADR-8@hybrid
+paired_with: []
+stage: 1
+metrics: {}
+conclusion: ''

@@ -1,0 +1,142 @@
+# UVT Stage 1 基础训练配置（02 §1.1 / 01 §2.9 Stage-1 损失表）
+# 兼容 null 冒烟：torchrun --nproc_per_node=8 train.py --cfg cfgs/uvt_stage1.yaml \
+#   --csv_file null128 --batch_size 2 --frame_num 17 --input_size 256 --num_workers 4
+# 字段对照 TR-2 (trainers/uvt_tokenizer_trainer.py) 的 cfg 读取，逐段可审。
+
+trainer: uvt_tokenizer_trainer            # 注册名（trainers/__init__.py）
+
+# —— TR-2 直接读取的顶层字段 ——
+stage: 1                                   # L51：三阶段状态机（1=基础全参）
+lambda_dist: 0.5                           # L53：蒸馏总权重（01 §2.8 默认 0.5，P3 扫 {0.25,0.5,1.0}）
+clip_grad_max_norm: 0.0                    # L54：梯度裁剪（0=关）
+latent_stats_n: 10000                      # L256：Stage-3 latent 统计 token 上限（此处 Stage-1 不用）
+data_version: 'imagenet-v1+openvid-256-v1' # L97：实验卡数据版本（03 §2.3）
+adr_versions: ['ADR-3@(0,6)', "ADR-4'@iso", 'ADR-8@hybrid']  # L102：实验卡
+paired_with: []                            # L103：配对消融（D13）
+
+# —— 模型（models.make('uvt_tokenizer', args) → UVTConfig(**args)）——
+# UVTTokenizer.__init__(cfg=None, **kwargs)：yaml args 透传成 UVTConfig 字段。
+model:
+  name: uvt_tokenizer
+  args:
+    model_name: 'google/siglip2-so400m-patch16-256'
+    gen_depth: 13                          # ADR 均衡切分
+    c_latent: 64                           # HYDRA C=64 甜点
+    fold_positions: [0, 6]                 # ADR-3
+    unfold_positions: [21, 27]             # 镜像（27=末块之后）
+    attn_mode: 'tubelet'                   # ADR-2
+    rope_dims: 32                          # ADR-8
+    decoder_init: 'siglip'                 # §2.7
+    use_cos_consistency: true              # HYDRA L_cos
+    kl_weight: 1.0e-6                      # D14
+    tiny: false                            # 生产（null 冒烟走真实 27 层架构，集群一次性下载 SigLIP2 权重）
+    # 损失权重字段（L-1/L-2 getattr 读，定义在此消除回退）
+    l1_weight: 1.0
+    lpips_weight: 1.0
+    cos_weight: 1.0
+    distill_img_patch_weight: 1.0
+    distill_img_pool_weight: 1.0
+    distill_vid_weight: 1.0
+
+# —— 蒸馏对齐头维度（L158-162 DistillLoss 构造）——
+distill:
+  student_dim: 1152                        # Sem-ViT/Decompressor 输出维
+  teacher_img_dim: 1152                    # SigLIP2-So400M
+  teacher_vid_dim: 1152                    # ⚠ P0-golden 校准后改 InternVideo-Next-L 实际维（ADR-7）
+
+# —— GAN（Stage-2 才启用，GANLossConfig 字段，L167 gan_overlay）——
+gan:
+  disc_loss: 'ns_smooth'
+  disc_weight: 0.3                         # 01 §2.9
+  disc_factor: 1.0
+  lecam_weight: 1.0e-3                     # §2.9 LeCam
+  lecam_ema_decay: 0.999
+  r1_gp_weight: 0.0
+  d_update_freq: 5                         # §2.9 D 每 5 步
+  disc_start: 0
+  dis_lr_multiplier: 1.0                   # §2.9 D lr = G lr ×1
+  dis_adam_betas: [0.5, 0.9]               # GAN 社区经验
+
+# —— 教师（L183-195）——
+teachers:
+  img_id: 'google/siglip2-so400m-patch16-256'
+  tiny: false
+  vid_mock: true                           # null 冒烟/离线用 MockTeacher；真实训练改 false
+  vid_mock_args: { frames: 16, spatial_tokens: 256, dim: 1152 }  # MockTeacher 签名(frames/spatial_tokens/dim)；仅 vid_mock=true 用
+  vid:                                     # vid_mock=false 时用（InternVideo-Next-L，ADR-7）
+    teacher_id: 'OpenGVLab/InternVideo2-Stage2_1B'
+
+# —— 数据（D-1 video / D-2 image 经 D-3 JointLoader 交替）——
+# train_dataset：LARP make_cfg 预处理需要此节（strip cls_vid_num 引号，train.py:131）。
+# TR-2.make_datasets 实际用 joint_dataset 加载；本节仅为满足 make_cfg 的 LARP 兼容结构。
+train_dataset:
+  name: video_dataset
+  args:
+    root_path: data/metadata
+    split: train
+    frame_num: $frame_num$
+    rand_augment: 'no'
+    csv_file: $csv_file$
+    cls_vid_num: '-1_-1'
+    crop_size: $input_size$
+    scale: 1.0
+    aspect_ratio: 1.0
+    rand_flip: 'yes'
+    use_all_frames: false
+    pre_load: false
+  loader:
+    batch_size: $batch_size$
+    num_workers: $num_workers$
+
+# null 冒烟：--csv_file null128 触发 LARP 假数据机制（video_dataset.py:90）
+joint_dataset:
+  seed: 0                                  # L100：配对消融的确定性采样序
+  sources:
+    # TR-2.make_datasets 读 s['dataset']（= {name,args} spec）+ s['batch_size'] + s['ratio']
+    - dataset: { name: video_dataset, args: { csv_file: $csv_file$, frame_num: $frame_num$,
+                  crop_size: $input_size$, rand_flip: 'yes', root_path: data/metadata,
+                  split: train, cls_vid_num: '-1_-1', use_all_frames: false, pre_load: false } }
+      batch_size: $batch_size$
+      ratio: 3
+    - dataset: { name: image_dataset, args: { csv_file: null128, crop_size: $input_size$ } }
+      batch_size: $batch_size$
+      ratio: 1
+
+# 评测数据集（test_dataset，LARP BaseTrainer 用）
+test_dataset:
+  name: video_dataset
+  args: { root_path: data/metadata, frame_num: $frame_num$, cls_vid_num: '-1_-1',
+          crop_size: $input_size$, use_all_frames: false, pre_load: false }
+  csv_paths: { ucf101_val: '' }
+  loader: { batch_size: $batch_size$, num_workers: $num_workers$ }
+
+# —— 优化器（G 侧 AdamW(0.9,0.95) 2e-4 wd0.05，01 §2.9；D 侧 TR-2 内部建 Adam(0.5,0.9)）——
+optimizer:
+  name: adamw
+  loss_name: adam                          # D 侧优化器（BaseTrainer 双优化器约定）
+  args: { lr: 2.0e-4, betas: [0.9, 0.95], weight_decay: 0.05 }
+  loss_args: { lr: 2.0e-4, betas: [0.5, 0.9] }   # D lr = G×dis_lr_multiplier
+  lr_type: cosine
+  warmup_epoch: 1
+  min_lr_mult: 0.05
+
+# —— 训练设置（BaseTrainer）——
+max_epoch: 400
+eval_epoch: 25
+vis_epoch: 25
+latest_interval: 5
+save_epoch: 100000000
+save_best: false
+stepwise_logging: false
+ema_decay: '0.9999_0.999'                  # §2.9 多 decay EMA（0.9999 主 + 0.999 备查）
+
+# 加速
+use_amp: true
+amp_dtype: 'bfloat16'                      # §2.9 bf16
+compile: true
+compile_mode: 'default'
+flash_attn: false
+grad_accumulates: 4                        # TR-1b：全局 bs256，8 卡 ×(bs32×accum4)（02 §2.2-b）
+
+# 梯度裁剪（如开）
+# clip_grad_max_norm: 1.0                  # 默认 0=关，上面顶层已设
