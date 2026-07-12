@@ -29,6 +29,10 @@ class BackboneParts:
     dec_blocks: List[UVTBlock]     # 全部 27 层的另一份独立深拷贝（decoder 初始化）
     post_ln: nn.Module             # 末端 LayerNorm
     map_head: nn.Module            # MAP 注意力池化头（ADR-9）
+    # 学生输入归一化统计（第 15 号修复，docs/06 §6.8）：来自官方 processor 配置，
+    # 供 GenViT 在 patchify 前施加（教师 T-1 同源，绝不手写常数——tiny 除外，见 load）。
+    image_mean: tuple = (0.5, 0.5, 0.5)
+    image_std: tuple = (0.5, 0.5, 0.5)
 
 
 def load_siglip_parts(model_name: str = "google/siglip2-so400m-patch16-256",
@@ -64,12 +68,20 @@ def load_siglip_parts(model_name: str = "google/siglip2-so400m-patch16-256",
             patch_size=16,
         )
         vision = _tower(SiglipVisionModel(config))
+        # tiny 无 processor 文件（离线随机权重，归一化统计无意义），用 SigLIP 惯例默认
+        # (0.5,0.5,0.5)——这是 dataclass 默认值，非"手写生产常数"（生产路径严格读 processor）。
+        image_mean, image_std = (0.5, 0.5, 0.5), (0.5, 0.5, 0.5)
     else:
         # 固定分辨率 256 权重（非 naflex，见模块 docstring）。
         vision = _tower(SiglipVisionModel.from_pretrained(model_name))
         n_layers = len(vision.encoder.layers)
         assert n_layers == 27, f"SigLIP2-So400m 应为 27 层，实得 {n_layers}"
         assert vision.config.hidden_size == 1152, f"应为 1152 宽，实得 {vision.config.hidden_size}"
+        # 学生输入归一化统计（第 15 号修复）：与教师 T-1 同源读官方 processor 配置，
+        # 绝不手写常数（T-1 卡纪律同款）。生产路径严格要求可加载（缺文件即炸，不静默回退）。
+        from transformers import AutoImageProcessor
+        ip = AutoImageProcessor.from_pretrained(model_name)
+        image_mean, image_std = tuple(ip.image_mean), tuple(ip.image_std)
 
     layers = vision.encoder.layers
     n = len(layers)
@@ -98,4 +110,6 @@ def load_siglip_parts(model_name: str = "google/siglip2-so400m-patch16-256",
         dec_blocks=dec_blocks,
         post_ln=post_ln,
         map_head=map_head,
+        image_mean=image_mean,
+        image_std=image_std,
     )

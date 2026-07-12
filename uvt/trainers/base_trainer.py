@@ -413,7 +413,14 @@ class BaseTrainer():
 
         if self.distributed:
             # === UVT modification (TR-1a): 多机下 device_ids 必须是本地设备而非全局 rank ===
-            model_ddp = DistributedDataParallel(model_compiled, device_ids=[torch.cuda.current_device()])
+            # find_unused_parameters（自 uvt-npu 回移，2026-07-12）：JointLoader 会产出纯图像
+            # batch（F=1），按契约⑥ Decompressor 该步不参与（decomp_out=None），TemporalFold/
+            # Unfold 的 proj 同样直通不触碰——模型含「条件性未用参数」。默认 True 让 DDP 正确
+            # 处理，否则窗口末以图像 batch 收尾时报 "Expected to have finished reduction"。
+            # cfg 可关（纯视频训练时省一点通信）。
+            model_ddp = DistributedDataParallel(
+                model_compiled, device_ids=[torch.cuda.current_device()],
+                find_unused_parameters=self.cfg.get('find_unused_parameters', True))
             # === UVT modification end ===
         else:
             model_ddp = model_compiled

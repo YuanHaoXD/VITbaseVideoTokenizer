@@ -56,10 +56,21 @@ class PixelDecoder(nn.Module):
             p = parts.embeddings.patch_embedding.kernel_size[0]
         self.patch_size = int(p)
 
+        # 末端规范化（第 15 号修复，docs/08 §6.5 / docs/06 §6.8）：末 block 输出是
+        # SigLIP2 初始化残差流（真权重下尺度 O(10²)），直入随机初始化像素头会产出
+        # ±44 的 x_hat（目标 [0,1]）。SigLIP2 原序 encoder→post_layernorm→head，
+        # Sem-ViT 已镜像，decoder 此处补齐（新建 LN，不与 sem_vit.post_ln 共享参数）。
+        self.final_ln = nn.LayerNorm(dim)
+
         # 锚帧/非锚帧独立像素头（随机初始化，01 §2.7）。展开已把时间位还原到逐帧，
         # 故两头输出维一致均为 3·p·p（M-8 卡），无需时间 patch 因子。
         self.head_anchor = nn.Linear(dim, 3 * self.patch_size * self.patch_size)
         self.head_frame = nn.Linear(dim, 3 * self.patch_size * self.patch_size)
+        # 像素头校准初始化（第 15 号修复配套）：目标值域 [0,1]、均值 ~0.5，
+        # weight 小尺度 + bias=0.5 使初始输出 ≈ 灰图（L1 起点 ~0.25，梯度方向干净）。
+        for head in (self.head_anchor, self.head_frame):
+            nn.init.normal_(head.weight, std=0.02)
+            nn.init.constant_(head.bias, 0.5)
 
         # ADR-8 消融臂：rope_dims=0 → time_ids=None。
         self.use_rope = cfg.rope_dims > 0
@@ -92,6 +103,9 @@ class PixelDecoder(nn.Module):
         for j, pos in enumerate(self.unfold_positions):
             if pos == len(self.blocks):
                 x = self.unfolds[j](x)
+
+        # 末端规范化后进像素头（第 15 号修复：镜像 SigLIP2 encoder→post_ln→head 原序）。
+        x = self.final_ln(x)
 
         # 双像素头：锚帧与非锚帧独立线性投影（T1z=1 时 frames 切片为空，cat 天然退化）。
         pix_anchor = self.head_anchor(x[:, :1])             # [B,1,N,3pp]

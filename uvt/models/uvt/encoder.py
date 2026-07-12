@@ -31,6 +31,13 @@ class GenViT(nn.Module):
         self.blocks = nn.ModuleList(parts.gen_blocks)  # M-4 交付的是普通 list，需包 ModuleList 注册参数
         dim = parts.gen_blocks[0].attn.dim
 
+        # 学生输入归一化（第 15 号修复，docs/06 §6.8）：入口协议不变（[0,1]，与重建目标/
+        # LPIPS/教师入口一致），patchify 前按 SigLIP2 processor 统计归一化——预训练权重
+        # 期望的输入分布是 (x-mean)/std（教师 T-1 同款），直喂 [0,1] 会整体偏移先验。
+        # buffer 持久化：随 checkpoint 自描述，推理端不依赖外部 processor 文件。
+        self.register_buffer("px_mean", torch.tensor(parts.image_mean).view(1, 3, 1, 1))
+        self.register_buffer("px_std", torch.tensor(parts.image_std).view(1, 3, 1, 1))
+
         fp = tuple(cfg.fold_positions)
         # ADR-3：折叠次数固定 2（4× 时间压缩）；位置合法域 [0, len(blocks)]，要求升序。
         assert len(fp) == 2, f"fold_positions 必须恰为 2 个（4×=2×2 层级折叠，ADR-3），实得 {fp}"
@@ -62,6 +69,7 @@ class GenViT(nn.Module):
 
         # ①空间 patchify：逐帧过 SigLIP2 embeddings，(B·F) 折进 batch（M-6 卡实现要点②）。
         frames = rearrange(video, "b c f h w -> (b f) c h w")
+        frames = (frames - self.px_mean) / self.px_std     # 第 15 号修复：SigLIP 输入归一化
         tok = self.embeddings(frames)                      # [(B·F), N, D]
         x = rearrange(tok, "(b f) n d -> b f n d", b=B)    # [B, T1=F, N, D]
 

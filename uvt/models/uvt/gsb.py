@@ -15,6 +15,11 @@ import torch.nn as nn
 class GSB(nn.Module):
     def __init__(self, d_model: int = 1152, c_latent: int = 64):
         super().__init__()
+        # 瓶颈入口规范化（第 15 号修复，docs/08 §6.5 / docs/06 §6.8）：h 是 SigLIP2 残差流
+        # 中段裸切片，含 O(10³) 的巨激活通道（massive activations，近图像无关）。不加 LN 时
+        # μ/ρ 被其主导 → μ 跨图余弦 ~1、ρ 钉死 clamp 上界（σ=e^10 噪声 + clamp 外零梯度死区）。
+        # SigLIP2 自身读出前必过 post_layernorm，此处是同构要求。
+        self.norm = nn.LayerNorm(d_model)
         # HYDRA 原文式 2：proj 输出 2*c_latent，chunk 成 (μ, ρ)。
         self.proj = nn.Linear(d_model, 2 * c_latent)
         # 通道级统计缓冲（Stage 3 由 estimate_latent_stats 写入），随 checkpoint 持久化。
@@ -34,13 +39,17 @@ class GSB(nn.Module):
     def normalize(self, value: bool) -> None:
         self._normalize_flag.fill_(1 if value else 0)
 
-    def compress(self, h: torch.Tensor):
-        """h:[B,T1,N,D] -> (z, mu, kl)。z 为物理（未规范化）latent。"""
-        mu, rho = self.proj(h).chunk(2, dim=-1)
+    def compress(self, h: torch.Tensor, sample: bool = True):
+        """h:[B,T1,N,D] -> (z, mu, kl)。z 为物理（未规范化）latent。
+
+        sample=False 走确定性路径 z=μ（推理/探针用）——第 15 号修复顺带收口：此前
+        调用方（M-10）直捅 self.proj 复制该逻辑，入口 LN 加入后会被绕过，故收进本方法。
+        """
+        mu, rho = self.proj(self.norm(h)).chunk(2, dim=-1)
         # ρ clamp(-30, 20)：LeanVAE 同款数值保护，防 exp 溢出/下溢。
         rho = rho.clamp(-30.0, 20.0)
-        # 重参数化：z = μ + ε·exp(0.5ρ)。
-        z = mu + torch.randn_like(mu) * torch.exp(0.5 * rho)
+        # 重参数化：z = μ + ε·exp(0.5ρ)；确定性路径 z=μ。
+        z = mu + torch.randn_like(mu) * torch.exp(0.5 * rho) if sample else mu
         # KL = -0.5·mean(1 + ρ - μ² - e^ρ)（标准 VAE 项，按元素平均）。
         kl = -0.5 * (1 + rho - mu.pow(2) - rho.exp()).mean()
         return z, mu, kl

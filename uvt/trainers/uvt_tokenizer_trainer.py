@@ -148,7 +148,8 @@ class UVTTokenizerTrainer(BaseTrainer):
             if self.distributed:
                 from torch.nn.parallel import DistributedDataParallel
                 self.model_ddp = DistributedDataParallel(
-                    self.model, device_ids=[torch.cuda.current_device()])
+                    self.model, device_ids=[torch.cuda.current_device()],
+                    find_unused_parameters=self.cfg.get('find_unused_parameters', True))
 
     # ------------------------------------------------------------------ 损失与教师
     def make_loss(self, loss_spec=None, load_sd=False):

@@ -12,7 +12,9 @@
 依赖模型模块（GSB.expand 已按 M-5 删除、反投影下放到 SemViT.in_proj / decoder.in_proj），本函数**不**自己
 调用任何投影层，而是要求调用方（trainer / UVTTokenizer.forward_train）预先把投影结果写进 out：
     out["mu_proj"] = sem_vit.in_proj(gsb.to_canonical(mu))   # [B,T1,N,D]
-    out["h"]       = 瓶颈前 Gen-ViT 输出 h                     # [B,T1,N,D]
+    out["h"]       = gsb.norm(h)（瓶颈入口规范化后特征，第 15 号修复）# [B,T1,N,D]
+（h 用规范化版本的原因：裸残差流被巨激活主导，方向对齐会被共享分量平凡满足；对齐目标
+  应是瓶颈实际消费的特征。）
 缺失任一键或 cfg.use_cos_consistency=False 时，cos_consistency 记 0（不产生梯度）。
 """
 from typing import Optional

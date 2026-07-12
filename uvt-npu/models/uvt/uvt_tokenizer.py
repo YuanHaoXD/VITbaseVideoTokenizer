@@ -10,7 +10,7 @@ HF 发布接口（PyTorchModelHubMixin，照抄 LARP 用法）。
   - decoder 吃**物理** z：`x_hat = decoder(z, hw)`            （非规范化）
   - sem_vit 吃**规范** z：`s, s_pool = sem_vit(gsb.to_canonical(z))`
   - L_cos 的 mu_proj = `sem_vit.in_proj(gsb.to_canonical(mu))` （canonical μ 再 in_proj）
-  - out['h'] = h（物理，瓶颈前）
+  - out['h'] = gsb.norm(h)（瓶颈入口规范化后特征，第 15 号修复；L_cos 对齐目标）
   normalize=False（Stage1/2）时 to_canonical 恒等，全自洽。
 
 【DDP 契约③】forward 训练态必须分派到 forward_train——DDP 只 hook forward，
@@ -148,15 +148,9 @@ class UVTTokenizer(nn.Module, PyTorchModelHubMixin):
         # ① GenViT → h（瓶颈前，物理）
         h = self.encoder(video, attn_mode)                     # [B, 1+(F-1)//4, N, D]
 
-        # ② GSB 压缩 → z(物理), mu, kl
-        if sample:
-            z, mu, kl = self.gsb.compress(h)
-        else:
-            # 推理确定性路径：z=μ（无重参数噪声），kl 仍按式算（仅供日志）
-            mu, rho = self.gsb.proj(h).chunk(2, dim=-1)
-            rho = rho.clamp(-30.0, 20.0)
-            z = mu
-            kl = -0.5 * (1 + rho - mu.pow(2) - rho.exp()).mean()
+        # ② GSB 压缩 → z(物理), mu, kl（确定性路径已收口进 compress(sample=False)，
+        #    第 15 号修复：此前直捅 gsb.proj 会绕过瓶颈入口 LN）
+        z, mu, kl = self.gsb.compress(h, sample=sample)
 
         # ③ decoder 吃**物理** z（ADR-5：decoder 物理上永远消费反归一化的 z）
         x_hat = self.decoder(z, hw, attn_mode)                 # [B,3,1+T,H,W]
@@ -169,7 +163,9 @@ class UVTTokenizer(nn.Module, PyTorchModelHubMixin):
 
         out = {
             "x_hat": x_hat,
-            "z": z, "mu": mu, "kl": kl, "h": h,
+            # out["h"] = 瓶颈入口规范化后的特征（gsb.norm(h)，第 15 号修复）：L_cos 的对齐
+            # 目标应是瓶颈实际消费的特征——裸 h 被巨激活主导，余弦对齐会被共享分量平凡满足。
+            "z": z, "mu": mu, "kl": kl, "h": self.gsb.norm(h),
             "s": s, "s_pool": s_pool, "mu_proj": mu_proj,
         }
 
@@ -191,18 +187,13 @@ class UVTTokenizer(nn.Module, PyTorchModelHubMixin):
 
     # ------------------------------------------------------------------ 分项接口
     def encode(self, video: torch.Tensor, sample: bool = True) -> dict:
-        """{z, mu, kl, h}。z 为物理 latent。sample=False 时 z=μ（确定性）。"""
+        """{z, mu, kl, h}。z 为物理 latent。sample=False 时 z=μ（确定性）。
+        h 为瓶颈入口规范化后的特征（gsb.norm，第 15 号修复，与 forward_train 的 out['h'] 一致）。"""
         if video.dim() == 4:
             video = video.unsqueeze(2)
         h = self.encoder(video, self.cfg.attn_mode)
-        if sample:
-            z, mu, kl = self.gsb.compress(h)
-        else:
-            mu, rho = self.gsb.proj(h).chunk(2, dim=-1)
-            rho = rho.clamp(-30.0, 20.0)
-            z = mu
-            kl = -0.5 * (1 + rho - mu.pow(2) - rho.exp()).mean()
-        return {"z": z, "mu": mu, "kl": kl, "h": h}
+        z, mu, kl = self.gsb.compress(h, sample=sample)
+        return {"z": z, "mu": mu, "kl": kl, "h": self.gsb.norm(h)}
 
     def decode(self, z_phys: torch.Tensor, hw) -> torch.Tensor:
         """物理 latent → 像素（消费物理 z，非规范化）。"""

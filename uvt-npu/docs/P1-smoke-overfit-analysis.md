@@ -87,8 +87,23 @@
 - **P1 的风险**:若 #1(真图像重测)仍不收敛,则 P1-base(ImageNet 50k 步)的 PSNR≥26 Gate 可能达不到,需先修重建路径。这是 R11 之外的**新风险**,建议进风险登记册。
 - **当前定位**:P1-smoke 的"不崩 + loss 下降"已满足(管线通);"PSNR>30 overfit"未满足,但**很可能因测试输入(随机噪声)不当**,需真图像确证后再定性。
 
-## 8. 产物清单
+## 8. 产物清单（原文）
 
 - 日志:`uvt-npu/logs/{uvt_p1_overfit,uvt_p1_overfit2,uvt_p1_overfit3,uvt_p1_overfit_l1only,uvt_p1_overfit_detz,probe_recon}.log`
 - 脚本:`uvt-npu/scripts/p1_smoke_overfit.py`(支持 STEPS/BS/SIZE/LR/AMP/DIST/LPIPS_W/SAMPLE 环境变量)、`scripts/probe_recon.py`
 - 本文档:`uvt-npu/docs/P1-smoke-overfit-analysis.md`
+
+---
+
+## 9. 根因确认与修复（2026-07-12 追记，开发机 Fable 5）
+
+§4 的假设已裁决:**A2 方向正确、A1(随机噪声伪影)不成立**。逐行审查 uvt/ 模型代码后定位为 **spec 级遗漏——切分边界缺规范化**(docs/06 §6.8、docs/08 §6.5):
+
+1. **μ"塌缩"的真相**:h 是 SigLIP2 第 13 层裸残差流,含 massive activations(O(10³)、近图像无关的通道)。gsb.proj 默认初始化 |W|≈0.03,μ 却到 ±69 → 反推 h 有 O(10³) 分量;共享巨激活主导 μ 方向 → 跨图余弦 0.997。**真图像下同样会出现**(巨激活与内容无关),故 §6 建议 1"真图重测"不会自愈。
+2. **sample=True 各组必然不收敛的机制**:ρ 与 μ 同源同尺度,大量通道钉死 clamp(-30,20) 上界 → σ=e^10≈22000 的噪声注入 z;且 clamp 界外**零梯度**,KL/重建都无法把饱和 ρ 拉回。解释 #3 fp32 发散、#4 纯 L1 震荡 98↔5、#5 确定性 z 最稳但仍卡。
+3. **x_hat ±44**:decoder 末 block 残差流(真权重尺度 O(10²))直入随机初始化像素头。SigLIP2 原序 encoder→post_layernorm→head,Sem-ViT 镜像了,decoder 漏了——这正是"语义学得动、像素学不动"的原因(语义支路是唯一有出口 LN 的支路)。
+4. 次要:学生编码器把 [0,1] 直喂 SigLIP2 embeddings(教师侧却按 processor mean/std 归一化)。
+
+**修复**(已落地 uvt/ 与 uvt-npu/ 双仓,契约测试 tests/test_boundary_norms.py 4 项全绿,双仓全量 81 passed):GSB 入口 LayerNorm + compress(sample=) 收口、decoder final_ln + 像素头校准初始化(weight std=0.02/bias=0.5)、GenViT px_mean/px_std 输入归一化 buffer、out['h']/L_cos 对齐目标改为规范化 h。
+
+**对 §6 建议的修订**:服务器侧重跑顺序 = ①拉最新代码重跑 probe_recon.py(预期:μ 余弦分化、x_hat 值域 O(1))→ ②SAMPLE=0 重跑 overfit(预期 PSNR 上行)→ ③SAMPLE=1 重跑 → ④真图像重测仍有价值(排除 torch.rand 对 LPIPS/语义项的干扰),但不再是关键路径。注意:修复改变了 state_dict 键集(gsb.norm.*/decoder.final_ln.*/encoder.px_mean/px_std),旧 checkpoint 不兼容(无生产 checkpoint,无迁移负担)。

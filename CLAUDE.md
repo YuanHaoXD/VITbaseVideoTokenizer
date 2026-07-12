@@ -90,9 +90,10 @@ Compression: space 16×, time 4×, channel 1152→64. Part map: M-1…M-10 = `at
 - **Statistical discipline:** ablations ≥2 seeds, same data order; report delta-sign consistency; report negative results honestly.
 - **License:** LARP / OmniTokenizer / LeanVAE are MIT (forkable). AToken is Apple Sample Code — read-only reference, **never commit**.
 
-## Known forward-compat shims & gotchas (14 real bugs already fixed — `docs/08 §6`, `docs/07 §5`)
+## Known forward-compat shims & gotchas (15 real bugs already fixed — `docs/08 §6`, `docs/07 §5`)
 
 These are fixed; the point is to recognize the *class* of issue when deps drift:
+- **#15 (spec-level, 2026-07-12): slice-boundary norms.** SigLIP2 residual streams carry massive activations (O(10³), near image-independent), so every *newly created* interface into/out of a pretrained slice must be normalized: `GSB.norm` before proj (also `compress(sample=False)` is now the only deterministic path — never call `gsb.proj` directly), `PixelDecoder.final_ln` before pixel heads, `GenViT.px_mean/px_std` input normalization ([0,1] entry protocol unchanged). Contract tests: `tests/test_boundary_norms.py`; full story `docs/06 §6.8` + `uvt-npu/docs/P1-smoke-overfit-analysis.md`. Tiny models are random-init and *cannot* catch scale pathologies — run a real-weight forward-stats probe before trusting new boundary code.
 - `transformers` 5.13 removed `SiglipVisionModel.vision_model` and changed `get_text_features` → return ModelOutput → shims in `siglip_backbone._tower()` and `siglip2_teacher._text_features_as_tensor()`. **Recommend pinning `transformers>=4.47,<6`.**
 - scipy removed `sqrtm(disp=)` → vendored `eval/fid/fid_score.py` uses `inspect.signature` fallback.
 - When editing `cfgs/*.yaml`: keep the `train_dataset` node (LARP's `make_cfg` preprocess needs it even though `TR-2` actually loads via `joint_dataset`); `joint_dataset.sources` must be the nested `{dataset:{name,args}}` form; `$var$` inside lists *is* now substituted (a list-recursion fix).
