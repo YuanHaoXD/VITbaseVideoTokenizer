@@ -174,3 +174,34 @@ ImageNet 下全后,从 `train-00000` parquet 抽 4 张真图跑纯 L1 overfit(`s
 - **μ 塌缩彻底解决**:真图两两余弦 **0.283**(torch.rand 噪声图 0.67;修复前 0.997)。自然图特征多样、编码器完全区分样本 → **#15 修复对真实图像确认有效,μ 塌缩非伪影残留**。§9-4 的核心疑问就此关闭。
 - **重建单调向上但偏慢**:纯 L1 单 batch,500 步 PSNR→16.1,1500 步→16.3;中途有"长平台(PSNR~11.9)+突破"模式(典型鞍点/坏盆地,非容量饱和)。对比低频结构图能到 34.9,差距源于真图高频细节 × 64 维 latent × 单 batch 慢优化。
 - **判断**:overfit 绝对 PSNR 不是关键指标(其优化景观与真实训练迥异——真训有大规模数据 / warmup+cosine / LPIPS+distill 更优梯度)。**#15 三大病理(μ塌缩/x_hat值域/sample发散)已全部证伪于真权重+真图**,重建路径健康结论稳固。下一步价值在真实 Stage 1 训练,非继续调 overfit。
+
+---
+
+## 12. 真实 Stage 1 训练路径验证(2026-07-15,首次真图 + 完整 TR-2 管线)
+
+§11 的 overfit 探针只跑"裸模型 + 纯 L1",本节首次跑**完整训练管线**(TR-2 / JointLoader /
+真 SigLIP2 教师 / 增广 / 完整损失)在真实 ImageNet 上,验证的是"真实训练路径"而非"裸重建"。
+
+**接入**:ImageNet-1k 是 HF parquet(`image{bytes,path}`+`label`,294 分片×~4358 行≈128 万)。
+新增 `datasets/parquet_image_dataset.py`(D-2b,双仓同步,`@register('parquet_image_dataset')`),
+直读 parquet、输出与 D-2 逐键一致的冻结契约(`{video[3,1,H,W],is_video:False,gt,path,label}`),
+JointLoader/TR-2 零改动。验证配置 `cfgs/uvt_stage1_imagenet_npu.yaml`(纯图像单源,vid_mock=true)。
+
+**运行**:单卡 NPU,生产模型(**#params=889.2M**,真 so400m),`max_shards=2`(8716 图,in_memory),
+bs=8,bf16,`tiny:false`。
+
+| step | 1 | 50 | 100 | 200 | 300 | 400 | 500 |
+|---|---|---|---|---|---|---|---|
+| PSNR | 2.64 | 5.59 | 7.22 | 8.25 | 8.61 | 8.77 | 8.95 |
+| loss | 3.17 | 2.01 | 1.74 | 1.58 | 1.52 | 1.50 | 1.475 |
+
+**结论**:
+- **真实训练路径健康**——PSNR 单调上行、总损失单调下降、0 报错/0 NaN、稳态 ~1.7 it/s(单卡 256²)。
+- **parquet 接入端到端可用**:`Joint source: parquet_image_dataset, len=8716` 正常,增广/值域/契约与 D-2 一致。
+- **#15 修复在完整管线下继续成立**:真权重 + 完整损失(lpips+distill+cos)下无边界规模爆炸、无发散。
+- 绝对 PSNR 仍低(~9@500步)是预期的:仍在 warmup+早期、完整损失(非纯 L1)、64 维 latent、
+  子集小;这是**健康检查**非训练交付(未存 checkpoint)。曲线仍在上行。
+
+**下一步**:① 8 卡 HCCL 在真权重下复验(当前 8 卡仅 tiny 验过,NPU_NOTES §6 遗留项);
+② 扩数据量(去 max_shards/接全量分片,注意全量跨片洗牌抖动,见 parquet_image_dataset docstring)
++ 加长训练观察 PSNR 爬升到 Gate(≥26)。

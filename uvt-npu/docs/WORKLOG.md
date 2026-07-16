@@ -24,9 +24,17 @@
 **做了什么**（进行中,实时更新）:
 1. ✅ 侦察全貌:git 有 6 个未提交改动 + 2 个未跟踪文件;环境体检 8×NPU 健在但 3 个 pip 包丢失;ImageNet 是 parquet 格式未接管线。
 2. ✅ 建立本 WORKLOG.md + 记忆 `worklog-and-git-discipline`(流程要求持久化)。
-3. ⏳ 提交上一轮 #15 验证成果(先 gitignore 顶层 `models/`)。
-4. ⏳ 恢复环境依赖(清华源装 lpips/mergedeep/pytorch_msssim)。
-5. ⏳ 接入 ImageNet parquet → 真实 Stage 1 短程验证。
+3. ✅ 提交上一轮 #15 验证成果(2 个 commit:`fc158bc` 路径可移植化+gitignore models/;`21fd4ff` 验证文档+WORKLOG)。工作树干净,仓在持久 NFS,提交可跨重启。
+4. ✅ 恢复环境依赖:清华源装 `lpips/mergedeep/pytorch-msssim/wandb`,`huggingface_hub` 降回 0.36.2。全导入栈复验绿(torch_npu 2.6.0.post5 / transformers 4.53.1 / 8×NPU 可用)。一键恢复命令:`$PYBIN -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple lpips mergedeep pytorch-msssim wandb && $PYBIN -m pip install "huggingface-hub>=0.30.0,<1.0"`(wandb 是 base_trainer 顶部无条件 import,必装)。
+5. ✅ 单卡 tiny 冒烟复验(恢复后环境):Epoch 1 干净通过,loss 2.94→2.08 单调降,各损失有限,稳态 ~5 it/s → 训练入口在恢复后的环境端到端可跑。
+6. ✅ **接入 ImageNet parquet + 真实 Stage 1 训练路径验证通过**。方案 B(用户选定):新增 `datasets/parquet_image_dataset.py`(D-2b,双仓同步,`@register`,直读 HF parquet、输出 D-2 冻结契约、复用 ImageTransform),`datasets/__init__.py` 注册,`cfgs/uvt_stage1_imagenet_npu.yaml`(纯图像单源验证配置),`tests/test_parquet_dataset.py`(3 项契约测试,双仓,数据/pyarrow 缺失自动 skip)。单卡真权重(#params=889.2M)短程验证:PSNR 2.64→8.95(500 步单调上行)、loss 3.17→1.475(单调降)、0 报错 → **真实训练路径健康、parquet 接入端到端可用**。详见 `docs/P1-smoke-overfit-analysis.md` §12。测试:95 项收集通过,dataset 邻近 7 passed。
+
+**本会话结论**:进度保存机制(WORKLOG+记忆)已建;上一轮 #15 成果已安全入库;环境已恢复;真实图像 Stage 1 训练路径已在真权重下打通验证。
+
+**下一步(下个助手接手)**:
+- ① 8 卡 HCCL 真权重复验(当前 8 卡仅 tiny 验过,NPU_NOTES §6 遗留);命令见 `cfgs/uvt_stage1_imagenet_npu.yaml` 头注释。
+- ② 扩数据(去 `max_shards`/接全量 294 分片,注意全量跨片洗牌抖动 → 见 `parquet_image_dataset.py` docstring 末的方案)+ 加长训练,观察 PSNR 爬到 Gate(≥26)。
+- ③ 视频教师上线(`teachers.vid_mock false` + InternVideo2,已在 `yh222/models/`)与真实视频源(decord 后端遗留,NPU_NOTES §6)。
 
 **下一步**:见上 3/4/5。
 

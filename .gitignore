@@ -18,7 +18,9 @@ dist/
 # vendored 权重例外（如需保留某权重，用 !path/to/it 解除忽略）
 
 # === 训练 / 评测产物（自动生成）===
-uvt/docs/experiments/        # TR-2 每 run 自动生成的实验卡（04 §4，按需手动入库重要的）
+# TR-2 每 run 自动生成的实验卡（04 §4，按需手动入库重要的；NPU 侧同理）
+uvt/docs/experiments/
+uvt-npu/docs/experiments/
 samples/
 outputs/
 wandb/
