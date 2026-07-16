@@ -13,6 +13,8 @@ dist/
 *.pth
 *.bin
 *.safetensors
+# 仓库内下载的权重目录（SigLIP2 so400m 等，4.5GB，持久 NFS，勿入库）
+/models/
 # vendored 权重例外（如需保留某权重，用 !path/to/it 解除忽略）
 
 # === 训练 / 评测产物（自动生成）===

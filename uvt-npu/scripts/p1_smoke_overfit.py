@@ -16,7 +16,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import accel  # triton shim + import torch_npu（必须在 import torch 前，本模块首行即此）
 import torch
 
-SIG = "/cache/VITbaseVideoTokenizer/models/siglip2-so400m-patch16-256"
+# 权重路径:默认指向仓库内 models/(可用环境变量 UVT_SIGLIP 覆盖）。
+# 旧值 /cache/... 随 /cache 清空已失效——现落仓库内持久目录。
+SIG = os.environ.get(
+    "UVT_SIGLIP",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                 os.pardir, "models", "siglip2-so400m-patch16-256"),
+)
 STEPS = int(os.environ.get("STEPS", 500))
 BS = int(os.environ.get("BS", 4))        # 256² 视频显存吃紧,图像 bs=4
 SIZE = int(os.environ.get("SIZE", 256))  # so400m 位置编码原生 256²,不能改(会崩)

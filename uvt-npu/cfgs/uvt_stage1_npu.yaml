@@ -32,7 +32,7 @@ paired_with: []
 model:
   name: uvt_tokenizer
   args:
-    model_name: '/cache/VITbaseVideoTokenizer/models/siglip2-so400m-patch16-256'  # NPU: 本地路径(HF 不通)
+    model_name: '/home/ma-user/work/dataset/yh222/VITbaseVideoTokenizer/models/siglip2-so400m-patch16-256'  # NPU: 本地路径(HF 不通)
     gen_depth: 13
     c_latent: 64
     fold_positions: [0, 6]
@@ -68,7 +68,7 @@ gan:
   dis_adam_betas: [0.5, 0.9]
 
 teachers:
-  img_id: '/cache/VITbaseVideoTokenizer/models/siglip2-so400m-patch16-256'      # NPU: 本地路径(HF 不通)
+  img_id: '/home/ma-user/work/dataset/yh222/VITbaseVideoTokenizer/models/siglip2-so400m-patch16-256'      # NPU: 本地路径(HF 不通)
   tiny: false
   vid_mock: true
   vid_mock_args: { frames: 16, spatial_tokens: 256, dim: 1152 }

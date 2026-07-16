@@ -14,7 +14,13 @@ from utils import accel
 import torch
 import torch.nn.functional as F
 
-SIG = "/cache/VITbaseVideoTokenizer/models/siglip2-so400m-patch16-256"
+# 权重路径:默认指向仓库内 models/(可用环境变量 UVT_SIGLIP 覆盖）。
+# 旧值 /cache/... 随 /cache 清空已失效——现落仓库内持久目录。
+SIG = os.environ.get(
+    "UVT_SIGLIP",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                 os.pardir, "models", "siglip2-so400m-patch16-256"),
+)
 dev = accel.device(); torch.manual_seed(0)
 from models.uvt.uvt_tokenizer import UVTTokenizer, UVTConfig
 
