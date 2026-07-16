@@ -1,0 +1,19 @@
+<div style="text-align: center;"><img src="imgs/img_in_image_box_194_150_996_584.jpg" alt="Image" width="67%" /></div>
+
+
+<div style="text-align: center;">Figure 1: HYDRA-X is a native UMM that unifies image/video understanding, image/video generation, and instruction-guided image editing through one holistic tokenizer HYDRA-XTOK.</div>
+
+
+the locality and structure encoded during image pretraining. Surprisingly, frame-level causal temporal attention with a minimal temporal receptive field, attending only to the immediately preceding frame, comprehensively outperforms its global counterpart. (2) A single-step patchify substantially underperforms a hierarchical patchify that distributes temporal compression across multiple stages, indicating that the temporal axis benefits from progressive, multi-scale folding. Together, these two design choices enable HYDRA-XTOK to surpass the reconstruction fidelity of dedicated 3D-conv video VAEs such as Wan2.2-VAE (Wan et al., 2025).
+
+To address the second challenge, we extend the established paradigm of semantic distillation (Qiu et al., 2026; Wu et al., 2025d; Ma et al., 2025a) from images to video, and uncover a fundamental asymmetry: while image latents can readily reuse existing semantic teachers, no available video encoder operates at the compressed temporal resolution of our latent, leaving the video stream without a natural source of semantic supervision. We resolve this asymmetry through a remarkably simple addition: a lightweight Decompressor that lifts the compressed latent back to its native temporal length, enabling direct distillation from pretrained image and video teachers (Tschannen et al., 2025; Wang et al., 2022) at full frame rate. Under this dual spatiotemporal supervision, the compact latent simultaneously preserves pixel-level fidelity and rich spatiotemporal semantic structure, substantially advancing both understanding and generation in UMMs.
+
+Building on this holistic tokenizer, HYDRA-X unifies five UMM tasks within a single shared encoder, as shown in Figure 1: image/video generation, image/video understanding, and image editing. Yet editing in particular exposes a fundamental flaw in both HYDRA and cascaded designs: by feeding the LLM only post-encoder semantic features, they confine source-target interaction to the semantic level and forfeit the fine-grained structural information that resides at the latent. To resolve this, we propose a principled inversion of the design: HYDRA-XTOK jointly tokenizes source and target with cross-frame interaction, fusing structural details directly into the target before reaching the LLM. This early latent-level interaction substantially improves editing consistency and accelerates convergence.
+
+Instantiated at the 7B scale on top of Qwen2.5-7B-Instruct (Yang et al., 2024a), HYDRA-X achieves strong performance across image and video understanding and generation tasks. More importantly, it elevates the visual tokenizer from a specialized image-processing component to a holistic image-and-video interface, laying a solid foundation for future unified-tokenizer UMM exploration.
+
+## 2 Related Work
+
+### 2.1 Visual Tokenizers for Unified Multimodal Models
+
+A growing body of work unifies reconstruction and semantics within a single visual tokenizer. For images, RAE (Zheng et al., 2025; Tong et al., 2026b) freezes a semantic encoder and learns a pixel decoder, while several unified-tokenizer designs (Yue et al., 2025; Yao et al., 2025a; Ma et al., 2025a; Qu et al., 2025; Song et al., 2025; Lin et al., 2025b; Tang et al., 2025) co-train reconstruction and understanding within a single ViT. HYDRA (Qiu et al.,
