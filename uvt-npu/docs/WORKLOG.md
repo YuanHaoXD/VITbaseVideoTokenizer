@@ -43,6 +43,25 @@
 
 ---
 
+## 2026-07-16（晚·续）· 建过拟合探针实验台 `scripts/overfit_probe.py`(小数据集 sanity gate)
+
+**背景/动机**（用户）:全量跑几天才发现问题时间成本太大 → 先在**小数据集上 overfit**证明模型/损失/梯度/数据管线整条链路无病（那位有名大佬的老配方:overfit one batch first）。要求:小数据集 + 日志存 `uvt-npu/logs/` + wandb 监控 + 每隔若干步 dump 重建图。
+
+**做了什么**:
+1. ✅ 新增 `scripts/overfit_probe.py`（可复用实验台，非一次性 probe）:
+   - 从 ImageNet parquet 抽 N 张固定真图，minibatch 循环 overfit。
+   - **对齐 run-full-03 真实训练目标**（lpips0.5+cos0.5+distill0.5+kl1e-6，真 SigLIP2 教师）——不是简化 loss，故这里能暴露的 == 全量会遇到的。
+   - wandb **离线**（本机无外网，`WANDB_MODE=offline`，跑完 `wandb sync` 上传）。
+   - 每 `--img_every` 步 dump `[上排GT/下排重建]` 对比 PNG → `logs/<run>/images/`，同时进 wandb。
+   - 全落盘 `logs/<run>/`（overfit.log tee + images/ + wandb/）。μ 塌缩自检、best_psnr>30 verdict。
+   - `--tiny --cpu` 冒烟自检模式（不占 NPU）。
+2. ✅ **CPU tiny 冒烟全绿**:管线端到端通——data/tiny模型(0.8M)/tiny教师/recon+distill 组装/loss 单调降(1.97→1.65)/backward+step/psnr/wandb离线/PNG dump(192×128=[3图×2排] 正确)。**未占用任何 NPU 卡**（`--cpu`，torch_npu AdamW patch 需卡可见但只读设备名，不分配显存）。
+3. ⏳ **真跑待定（资源冲突）**:生产 overfit（tiny=false+真SigLIP2，单卡 ~20-25GB）与 full04 每卡 ~20GB 余量顶格 → 同卡跑有 OOM 风险会**连累 full04**（无 ckpt）。真跑需专卡决策（暂停 full04 / 等空卡）——已交用户定。
+
+**下一步**:用户定资源后跑真 overfit（PSNR 应爬到 >30 甚至 >35 证明能记忆）；此台以后作为**每次全量前的前置 gate**。
+
+---
+
 ## 2026-07-16（晚）· 修 epoch-末 checkpoint 保存崩溃（裸 cuda 端口遗漏）+ 重启主线 full04
 
 **背景**:run-full-03 跑完 epoch-1（PSNR 爬到 ~19.1，单调无平台，健康），在 epoch 边界 `save_checkpoint('epoch-last.pth')` 处**全 8 卡崩溃**，**0 checkpoint 落盘**（~3.5h epoch 白跑）。用户要求接着工作。
