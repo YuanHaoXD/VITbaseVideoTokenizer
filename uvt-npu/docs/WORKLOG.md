@@ -43,6 +43,47 @@
 
 ---
 
+## 2026-07-16（晚）· 修 epoch-末 checkpoint 保存崩溃（裸 cuda 端口遗漏）+ 重启主线 full04
+
+**背景**:run-full-03 跑完 epoch-1（PSNR 爬到 ~19.1，单调无平台，健康），在 epoch 边界 `save_checkpoint('epoch-last.pth')` 处**全 8 卡崩溃**，**0 checkpoint 落盘**（~3.5h epoch 白跑）。用户要求接着工作。
+
+**根因**:`utils/common.py` 的 `gather_object_from_all`（多卡 RNG-state gather）里两处**裸 cuda**是 NPU 端口的遗漏——
+- L153 `torch.ByteTensor(...).to('cuda')`
+- L182 `torch.tensor(size).cuda()`
+
+`uvt/`（CUDA 源）用 `.cuda()` 是对的；`uvt-npu/` 必须走设备门面。这是"端口漏改"类 bug，与 CLAUDE.md 红线"禁止在 uvt-npu 里裸写 torch.cuda"同源。之所以此前 8 卡冒烟没暴露：save 路径要 `tot_gpus>1` 才进 gather 分支，且 epoch-末才触发。
+
+**做了什么**:
+1. ✅ **修 `utils/common.py`**：两处 `.to('cuda')`/`.cuda()` → `.to(accel.device())`，顶部 `from utils import accel`（accel 不 import common，无循环依赖）。**仅 uvt-npu**，uvt/ 不动（故意的设备层分叉）。
+2. ✅ **全仓复扫裸 cuda**：余下命中都在**非当前路径**（LARP baseline trainer/sampler、FID/FVD eval 台）；`base_trainer` save 里的 `isinstance(scaler, torch.cuda.amp.GradScaler)` 已被 `accel.GradScaler` 返回 disabled cuda scaler 兼容（端口作者原注释），非 bug。
+3. ✅ **真机 2 卡 HCCL 验证**：脚本复现崩溃函数 `gather_object_from_all`（喂与 save_checkpoint 同构的 rng-state dict）→ world=2 gather 正确、keys=[0,1]、rank_marker 对齐。崩溃路径已闭合。
+4. ✅ **重启主线 = full04**（= full-03 **同配置** `cfgs/uvt_stage1_imagenet_full_npu.yaml`，identical，遵守 paired-baseline 纪律不改 bs/lr）。无 ckpt 只能从头（SigLIP2 init）。out_path `.../full04`，保留 full03 log/tensorboard 供参考。
+
+**结论/产出**:checkpoint 保存崩溃已修并真机验证；主线 full04 已在 8 卡后台重启（`full04.log`）。**首个真实价值点**：epoch-1 末（~3.5h）能否干净存出 `epoch-last.pth` —— 即本 fix 的验收。
+
+**下一步**:① 盯 full04 epoch-1 边界，确认 `epoch-last.pth` 落盘（fix 验收）；② 落盘后跑 `scripts/eval_metrics.py --ckpt` 出真实 6 指标校准；③ 长跑盯 PSNR 冲 Gate(≥26→29.5-31.5)。
+
+---
+
+## 2026-07-16 · 重建评测搭台（eval_metrics.py + I3D/Inception/DAVIS 下载）
+
+**会话目标**:搭可跑的重建评测 —— ImageNet PSNR/SSIM/rFID + DAVIS PSNR/SSIM/rFVD；只做搭台+下载+CPU sanity,不占训练用的 8 卡。
+
+**做了什么**:
+1. **新增 `scripts/eval_metrics.py`**(双仓同步 `uvt/`+`uvt-npu/`,device resolver 在 uvt/ 无 accel 时降级 cuda)。预处理只走 `eval/protocols.py`,指标只用 `eval/recon_metrics.ReconMetricsSuite`。checkpoint 走 `models.make(ckpt['model'], load_sd=True)`,支持 `--ema`。值域链:protocols[-1,1]→`from_eval_range`喂模型[0,1]→x_hat[0,1]→`to_eval_range`回[-1,1]喂指标。
+2. **下载权重**(任务假设的 `Daniel0724/OmniTokenizer` 无 i3d,实际源见记忆 `uvt-eval-weight-sources`):
+   - `eval/fvd/styleganv/i3d_torchscript.pt` ← HF `flateon/FVD-I3D-torchscript`(主选 rFVD)
+   - `eval/fvd/videogpt/i3d_pretrained_400.pt` ← HF `Xiaodong/FVD_I3D`(交叉核对)
+   - Inception rFID `pt_inception-2015-12-05-6726825d.pth`(95.6MB)← **ghfast.top 镜像**(github 经代理仅 12KB/s)→ `~/.cache/torch/hub/checkpoints/`
+   - DAVIS-2017 val 480p ← ethz 官方 zip(~100-180KB/s,后台下载+自动解压到 `Datasets/DAVIS`)
+3. **CPU sanity 全绿**:6 指标全验证 —— ImageNet PSNR/SSIM/LPIPS/rFID(真 parquet)、rFVD 两版(合成 clip,styleganv 22.57/videogpt 22.80);真实 889M 模型单张 CPU 前向(img 16s/vid 27s),`reconstruct()` 形状值域正确(img[1,3,256,256]/vid[1,3,17,256,256]∈[-1,1])。
+
+**结论/产出**:评测台已就绪。5/6 指标+真实模型前向全在 CPU 验证;DAVIS 真实数据 run 待 zip 下完(后台自动解压后补验)。**依赖非持久**:eval 用 `lpips`+`pytorch_msssim`,重启即丢需重装。
+
+**下一步**:① 训练存出 checkpoint 后跑真评测(`--ckpt <run>/epoch-N.pth`);② ImageNet 全量 100k 图单卡估 ~20-40min,用空闲卡或 `--limit`;③ DAVIS 解压后确认 val.txt 30 序列可读。
+
+---
+
 ## 2026-07-15（上一会话,已丢对话但成果在盘)· #15 真权重验证 + 环境重建
 
 > 完整诊断见 `docs/P1-smoke-overfit-analysis.md` §10–§11。摘要:

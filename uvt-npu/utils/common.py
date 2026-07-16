@@ -13,6 +13,8 @@ import torch.nn.functional as F
 from torch.optim import SGD, Adam, AdamW
 from torch.utils.tensorboard import SummaryWriter
 
+from utils import accel  # 设备门面：NPU/CUDA/CPU 统一（禁止在 uvt-npu 里裸写 torch.cuda）
+
 
 def ensure_path(path, replace=True):
     if os.path.exists(path):
@@ -150,7 +152,7 @@ def check_website_access_bool(url):
 
 def serialize_to_tensor(obj):
     obj_bytes = pickle.dumps(obj)
-    obj_tensor = torch.ByteTensor(list(obj_bytes)).to('cuda')
+    obj_tensor = torch.ByteTensor(list(obj_bytes)).to(accel.device())
     return obj_tensor, obj_tensor.size(0)
 
 
@@ -179,7 +181,7 @@ def gather_object_from_all(py_object):
 
     gathered_obj_dict = {}
     obj_tensor, obj_tensor_size = serialize_to_tensor(py_object)
-    local_tensor_size_tensor = torch.tensor(obj_tensor_size).cuda()
+    local_tensor_size_tensor = torch.tensor(obj_tensor_size).to(accel.device())
     tensor_size_tensor = local_tensor_size_tensor.clone()
     dist.all_reduce(tensor_size_tensor, op=dist.ReduceOp.MAX)
     max_tensor_size = tensor_size_tensor.item()
