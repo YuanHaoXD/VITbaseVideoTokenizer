@@ -39,4 +39,11 @@
 3. [持续] PSNR 爬升轨迹(full03/04 经验: epoch-1 内到 18-19)。
 
 ## 进度日志(每次巡检追加)
-- (待填)
+- **2026-07-16 22:30 启动成功**。setsid 挂起(主进程 PPID=1,已脱离终端,断连不停)。
+  - 数据集: `Joint source: parquet_image_dataset, len=161236`(真实 ImageNet,非假数据)✓
+  - 8 卡 HCCL DDP 全部在算(HBM 4-8GB)✓ 无报错 ✓
+  - 训练循环启动: `train: psnr=2.76 loss=3.145 step3/19609`(warmup 起点,正常)✓
+  - 主日志: `full05.log` · output: `full05/` · launcher PID 存于 `full05.launcher.pid`
+  - 自查命令: `bash scripts/check_full05.sh`
+  - 待观察: [ ] epoch-1 边界存盘(~3.5h 后,full03 崩点) [ ] PSNR 爬升(经验 epoch-1 内到 18-19)
+
