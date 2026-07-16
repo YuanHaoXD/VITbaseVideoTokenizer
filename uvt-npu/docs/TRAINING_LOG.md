@@ -37,6 +37,7 @@
   - **不动**:lambda_dist=0.5(已是 Hydra-X 一半,勿砍语义卖点)、kl=1e-6、distill=1.0、C=64、lr=2e-4、max_epoch=60、bs=8。
 - **预期(诚实区间)**:Stage-1 收敛 PSNR **29.5–31.5** / rFID ~0.5–0.8;+ Stage-2 GAN 守 PSNR、rFID 压到 ~0.33。
 - **状态**:刚启动。⚠️ **accum4 下进度条 19609 是 micro-batch,优化步=其 1/4(~4902)**;同 micro-step PSNR 比 full-02 低是正常的(权重更新少),按 opt-step 看。step135(≈34 opt-step)psnr=6.1。
+- **早期 opt-step 轨迹**(2026-07-15,warmup 内):opt25→50→75→100→150→175 = psnr 5.45→7.16→8.02→8.33→8.78→8.87,单调上行。**吞吐 1.56 it/s(accum4 后从 1.29 提升)≈3.5h/epoch**。warmup ~4900 opt-step,尚在早期,曲线待续。
 
 ### run-full-02(2026-07-15,已停)· 全量加载器打通
 - 真·全量 1.28M、rank分片+pre_sharded、steps/epoch=19609 验证通过。因全局 batch=64 配置错配(有效 lr 4×),启动 ~15min 即停,切 run-full-03。
