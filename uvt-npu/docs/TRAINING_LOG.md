@@ -22,7 +22,8 @@
 
 | 日期 | run | 步/epoch | 数据 | ImageNet PSNR | SSIM | rFID | 备注 |
 |---|---|---|---|---|---|---|---|
-| 2026-07-15 | full-03 | 19609(accum4) | 全1.28M | 18.22@opt4000(warmup尽) | 待评测 | 待评测 | ★主线;强劲爬升 |
+| 2026-07-16 | **full-04** | 19609(accum4) | 全1.28M | 训练中(从头) | 待评测 | 待评测 | ★主线;=full-03同配置,修 ckpt 崩溃后重启 |
+| 2026-07-15 | full-03 | 19609(accum4) | 全1.28M | 19.1@epoch1末 → **崩** | — | — | epoch-末 save ckpt 裸cuda崩溃,0 ckpt(已修) |
 | 2026-07-15 | full-02 | 19609 | 全1.28M | ~9.5(step411,warmup) | 待评测 | 待评测 | 已停(batch错配) |
 | 2026-07-15 | val8(单epoch) | 272 | 2 shards | ~8.5(500步早期) | — | — | 仅打通验证,非收敛值 |
 
@@ -30,7 +31,13 @@
 
 ## 🧪 运行记录
 
-### run-full-03(2026-07-15 启动)· ★当前主线 · 对齐 Hydra-X 协议
+### run-full-04(2026-07-16 启动)· ★当前主线 · = full-03 同配置,修 ckpt 崩溃后重启
+- **为何重启**:full-03 跑完 epoch-1(PSNR ~19.1，单调无平台)在 epoch 边界 `save_checkpoint('epoch-last.pth')` **全 8 卡崩溃**——`utils/common.py:gather_object_from_all` 两处裸 cuda(NPU 端口遗漏），**0 checkpoint 落盘**。已修（commit `22a7d1f`，真机 2 卡 HCCL 验证崩溃路径闭合），WORKLOG 2026-07-16（晚）有全貌。
+- **配置 identical**:`cfgs/uvt_stage1_imagenet_full_npu.yaml`，accum4(全局batch256)/lpips0.5/cos0.5/lr2e-4/max_epoch60。**paired-baseline 纪律，不趁重启改 bs/lr**（避免多变量混淆）。out_path `.../full04`（保留 full03 log/tensorboard）。
+- **从头训**（无 ckpt 可 resume，SigLIP2 init）。**首个验收点**:epoch-1 末能否干净存出 `epoch-last.pth`（本 fix 的验收）；落盘后即可跑 `scripts/eval_metrics.py --ckpt` 出真实 6 指标。
+- **预期同 full-03**:Stage-1 收敛 PSNR 29.5–31.5 / rFID ~0.5–0.8；+S2 GAN 压 rFID ~0.33。~0.35 opt-step/s → 60 epoch ≈ 多天级长跑。
+
+### run-full-03(2026-07-15 启动)· 已崩(epoch-末 ckpt 保存 bug)· 见 full-04
 - **依据**:研究agent 分析(见上"关键情报")。相对 full-02 三处协调改动:
   - `grad_accumulates: 1→4` → **全局 batch 64→256=Hydra-X**;一举对齐 lr(2e-4 变合理)、warmup(≈5k opt-step)、总量(60ep≈294k opt-step≈Hydra-X S1)。**最高优先级、决定成败。**
   - `lpips_weight: 1.0→0.5`(HYDRA 参考 λ_perc=0.1,原 1.0 是 10×,压 PSNR)——单点 ROI 最高的 PSNR 杠杆,预期 +0.3~0.8dB(rFID 略升,靠 S2 GAN 补)。
