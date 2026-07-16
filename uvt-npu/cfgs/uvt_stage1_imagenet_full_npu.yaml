@@ -16,7 +16,7 @@ stage: 1
 lambda_dist: 0.5
 clip_grad_max_norm: 0.0
 latent_stats_n: 10000
-data_version: 'imagenet-1k-parquet-FULL-1.28M'
+data_version: 'imagenet-1k-FULL-run03-b256-lpips0.5'
 adr_versions: ['ADR-3@(0,6)', "ADR-4'@iso", 'ADR-8@hybrid']
 paired_with: []
 
@@ -35,8 +35,8 @@ model:
     kl_weight: 1.0e-6
     tiny: false
     l1_weight: 1.0
-    lpips_weight: 1.0
-    cos_weight: 1.0
+    lpips_weight: 0.5                 # ★run-full-03:HYDRA参考λ_perc=0.1,原1.0偏高压PSNR;为PSNR让路(rFID靠S2 GAN补)
+    cos_weight: 0.5                   # ★run-full-03:降权减轻共享z语义扰动(S2本就关,低风险)
     distill_img_patch_weight: 1.0
     distill_img_pool_weight: 1.0
     distill_vid_weight: 1.0
@@ -139,4 +139,4 @@ amp_dtype: 'bfloat16'
 compile: false
 compile_mode: 'default'
 flash_attn: false
-grad_accumulates: 1                    # 短程验证不累积,曲线更直观
+grad_accumulates: 4                     # ★run-full-03:全局batch 8×8×4=256=Hydra-X(修有效lr偏高4×)

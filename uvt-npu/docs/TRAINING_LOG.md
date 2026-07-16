@@ -12,6 +12,12 @@
 对照(同论文其它注意力):Full 31.10/0.8890/0.367;Causal 31.38/0.8901/0.352;Tubelet 31.42/0.8907/0.347。
 我们的模型用 tubelet(`attn_mode: tubelet`),对标 Tubelet→Ours 区间。
 
+### 📌 关键情报(研究agent 2026-07-15,据 docs/background/Hydra-X)——决定攻坚路线
+- **31.73 是 Table-1 架构消融最优行(Tubelet+层级patchify),训练协议=ImageNet-1k、batch 256、~150k–300k iter,损失=L1+LPIPS+KL。不是三阶段旗舰、不是 GAN 堆出来的。**
+- 推论:**PSNR 31 档靠"架构+L1+LPIPS+KL"Stage-1 就能到**(四变体 PSNR 全 31.1–31.7);**rFID 0.329 几乎必须 Stage-2 GAN**(纯 L1+LPIPS 的 rFID 约 0.5–0.8 档)。架构主要买 rFID/rFVD 不是 PSNR。
+- 我方 **C=64 与 Hydra-X 一致**,通道非瓶颈;**latent 宽度是禁区**(C≥256 毁 DiT 生成)。重建杠杆在 decoder 容量,不在 bottleneck。
+- **诊断出的头号配置错配**:全局 batch。旧 run(full-01/02)= 8×8×accum1 = **64**,而 Hydra-X = **256** → lr 2e-4 是为 256 定的,**旧 run 有效 lr 偏高 4×**(warmup 期噪声大)。
+
 ## 📊 指标进展(最新在上)
 
 | 日期 | run | 步/epoch | 数据 | ImageNet PSNR | SSIM | rFID | 备注 |
@@ -23,14 +29,20 @@
 
 ## 🧪 运行记录
 
-### run-full-02(2026-07-15 启动)· 真·全量 1.28M Stage 1 ★当前主线
-- **配置**:`cfgs/uvt_stage1_imagenet_full_npu.yaml`,8 卡,真 so400m(889M),bf16,tubelet,64 维 latent。
-- **数据**:ImageNet parquet **全 294 片≈1.28M**,rank 分片(每 rank ~16 万图 in_memory,rank0 len=161236)+ pre_sharded。内存 238G/1509G。
-- **规模**:**19609 步/epoch**(=跨rank MIN 对齐;每 rank 训满自己 ~16万、8卡并集=全1.28M/epoch),bs8,max_epoch=60,~4.4h/epoch。
-- **状态**:进行中。step10 psnr=2.42,warmup 起步。**这是冲指标的主线 run。**
+### run-full-03(2026-07-15 启动)· ★当前主线 · 对齐 Hydra-X 协议
+- **依据**:研究agent 分析(见上"关键情报")。相对 full-02 三处协调改动:
+  - `grad_accumulates: 1→4` → **全局 batch 64→256=Hydra-X**;一举对齐 lr(2e-4 变合理)、warmup(≈5k opt-step)、总量(60ep≈294k opt-step≈Hydra-X S1)。**最高优先级、决定成败。**
+  - `lpips_weight: 1.0→0.5`(HYDRA 参考 λ_perc=0.1,原 1.0 是 10×,压 PSNR)——单点 ROI 最高的 PSNR 杠杆,预期 +0.3~0.8dB(rFID 略升,靠 S2 GAN 补)。
+  - `cos_weight: 1.0→0.5`(降共享 z 语义扰动,S2 本关,低风险)。
+  - **不动**:lambda_dist=0.5(已是 Hydra-X 一半,勿砍语义卖点)、kl=1e-6、distill=1.0、C=64、lr=2e-4、max_epoch=60、bs=8。
+- **预期(诚实区间)**:Stage-1 收敛 PSNR **29.5–31.5** / rFID ~0.5–0.8;+ Stage-2 GAN 守 PSNR、rFID 压到 ~0.33。
+- **状态**:刚启动。⚠️ **accum4 下进度条 19609 是 micro-batch,优化步=其 1/4(~4902)**;同 micro-step PSNR 比 full-02 低是正常的(权重更新少),按 opt-step 看。step135(≈34 opt-step)psnr=6.1。
+
+### run-full-02(2026-07-15,已停)· 全量加载器打通
+- 真·全量 1.28M、rank分片+pre_sharded、steps/epoch=19609 验证通过。因全局 batch=64 配置错配(有效 lr 4×),启动 ~15min 即停,切 run-full-03。
 
 ### run-full-01(2026-07-15,已停)· 40 片子集 bootstrap
-- 174320 图子集,psnr 2.87→~9.0(step310,warmup平台),仅为先跑起来;全量加载器就绪后停,切 run-full-02。
+- 174320 图子集,psnr 2.87→~9.0(warmup),仅为先跑起来。
 
 ## ⚠️ 问题 & 尝试方案(最新在上)
 
@@ -54,4 +66,12 @@
 
 ## 🔬 进行中的研究/实验(子agent)
 - **子agent B**:评测台 `eval_metrics.py`(273行)+ I3D 权重已下、DAVIS 下载中。就绪后可在 checkpoint 上出真实 6 指标。
-- **研究agent(通向31)**:分析语义损失是否拖累 PSNR / 64维latent天花板 / 是否必须上Stage2 / lr-bs-warmup,产出 run-full-03 协调配置。
+- **研究agent(通向31)**:✅ 已交付。结论落地为 run-full-03(见上)。
+
+## 🗺️ 消融/实验 roadmap(研究agent建议,每项 paired 同 seed/data-order)
+1. **run-full-03 基线**(accum4+lpips0.5+cos0.5)——先确认能否进 30+ 档。★进行中
+2. LPIPS 扫 {0.25, 0.5, 1.0} paired —— 定 PSNR-vs-rFID 折中点。
+3. distill {off, 0.25, 0.5} paired —— **量化 Q1**(语义拖累几 dB,用数据替代猜测)。
+4. KL {1e-6, 1e-5} —— 确认 1e-6 最优。
+5. Stage-1 达 ~31 后 → **Stage-2 GAN**(decoder-only,守 PSNR、攻 rFID 0.33)。
+> 算力约束:8 卡=同时仅 1 个全量 run,收敛 ~数天/run → 消融只能少数几个 + 或用早期轨迹对比(不够定论但有信息)。优先把 run-full-03 跑到收敛出真实指标,再决定下一步。
