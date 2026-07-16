@@ -16,9 +16,10 @@
 
 | 日期 | run | 步/epoch | 数据 | ImageNet PSNR | SSIM | rFID | 备注 |
 |---|---|---|---|---|---|---|---|
+| 2026-07-15 | full-02 | 19609 | 全1.28M | ~9.5(step411,warmup) | 待评测 | 待评测 | 主线;epoch未完 |
 | 2026-07-15 | val8(单epoch) | 272 | 2 shards | ~8.5(500步早期) | — | — | 仅打通验证,非收敛值 |
 
-> 说明:上面是"训练路径验证"的早期值,远未收敛。真正的攻坚从下面 run-full-01 开始。
+> 说明:上面是"训练路径验证"的早期值,远未收敛。真正的攻坚从 run-full-02 开始。**PSNR/SSIM/rFID 的真实评测由子agent B 搭的 `eval_metrics.py` 在 checkpoint 上跑**(训练中的 psnr 是训练时估计,非正式指标)。
 
 ## 🧪 运行记录
 
@@ -47,5 +48,10 @@
 - **方案(子agent B 开发中)**:下载 DAVIS-2017 + I3D;把 `eval/recon_metrics.py` 串成可跑的 PSNR/SSIM/rFID(ImageNet val)+ PSNR/SSIM/rFVD(DAVIS)脚本 `scripts/eval_metrics.py`。
 
 ### P1(开局)· 吞吐偏低(~1.24 it/s / 8卡79 img/s)
-- **问题**:8×910B2 上 bs=8 仅 ~79 img/s,~37 分钟/epoch,冲高 PSNR 的迭代周期长。疑因:教师 so400m 额外前向 + 未开 torch.compile(NPU inductor→triton 脆弱,当前关) + bs 偏小(64G HBM 未吃满)。
-- **待尝试**:①增大 bs(试 16/卡,观察 HBM 与吞吐);②教师前向 `@torch.no_grad` + 是否可缓存(教师对同图确定,但增广随机,难缓存);③评估 NPU 上开 compile 的可行性(风险高,单独试)。留待后续 fire / 子agent。
+- **问题**:8×910B2 上 bs=8 仅 ~79 img/s,~4.4 小时/epoch(全量 19609 步),冲高 PSNR 的迭代周期长。疑因:教师 so400m 额外前向 + 未开 torch.compile(NPU inductor→triton 脆弱,当前关) + bs 偏小。
+- **实测 HBM**:bs=8 每卡 **41.7/65.5GB(~64%)**,余量 ~24GB → **bs 可加大(~12)**。AICore 利用率波动(部分时刻不饱和,疑数据/同步间隙)。
+- **待协调改动(研究agent分析中)**:bs↑ 需 lr 同步 scale;连同损失配比一起在 run-full-03 一次性协调改,避免多变量混淆。
+
+## 🔬 进行中的研究/实验(子agent)
+- **子agent B**:评测台 `eval_metrics.py`(273行)+ I3D 权重已下、DAVIS 下载中。就绪后可在 checkpoint 上出真实 6 指标。
+- **研究agent(通向31)**:分析语义损失是否拖累 PSNR / 64维latent天花板 / 是否必须上Stage2 / lr-bs-warmup,产出 run-full-03 协调配置。
