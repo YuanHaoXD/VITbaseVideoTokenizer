@@ -47,3 +47,12 @@
   - 自查命令: `bash scripts/check_full05.sh`
   - 待观察: [ ] epoch-1 边界存盘(~3.5h 后,full03 崩点) [ ] PSNR 爬升(经验 epoch-1 内到 18-19)
 
+- **2026-07-17 02:12 ✅ epoch-1 边界存盘成功 —— full03 崩溃点最终验收通过。**
+  - `Latest checkpoint saved. Time: 50.64s` → `epoch-last.pth` 15.8GB 落盘 ✓
+  - **存盘后训练未崩,继续 epoch-2**(存盘那刻正是 full03 崩点;修复根除确认)✓
+  - PSNR: warmup 2.76 → **epoch-1 达 24.2**(优于 full03/04 的 18-19 经验)✓
+  - lr_m=1.0(warmup 结束进满 lr)。吞吐 ~1.47 it/s。
+  - 注:日志有 torch_npu `_use_new_zipfile_serialization` **告警**(非错误),存盘正常完成。
+  - checkpoint 保存 bug(commit 22a7d1f)**在真实 8 卡全量训练上验收通过**。
+
+
