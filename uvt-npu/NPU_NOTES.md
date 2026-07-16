@@ -1,12 +1,18 @@
 # UVT NPU 移植说明（uvt-npu/）
 
 > 本目录是主仓 `uvt/`（CUDA/LARP）的 **NPU 移植版**，原 `uvt/` 零改动。移植已验证：单卡冒烟 ✓、8 卡 HCCL DDP 冒烟 ✓。
+>
+> **⚠️ 进度纪律**：服务器重启会清空 Claude 对话历史（本文件 §1 亦记环境非持久）。每个工作助手必须实时维护 **`docs/WORKLOG.md`**（持久工作日志）并勤 `git commit`——那是唯一跨重启的进度载体。开工先读 `docs/WORKLOG.md` 顶部快照。
 
 ## 1. 环境
 
 - **硬件**：8× 华为昇腾 Ascend 910B2（每卡 64G HBM），Kunpeng-920 aarch64，CANN 8.2.RC1（`npu-smi 25.5.1`）
 - **Python 环境**：conda env `PyTorch-2.6.0`（python 3.11.10，torch 2.6.0，**torch_npu 2.6.0.post5**，torchvision 0.21.0，transformers 4.53.1，timm 1.0.9，numpy 1.26.4，scipy 1.15.3）
-- **已补装到该 env**：`mergedeep`、`pytorch-msssim`、`lpips`、`moviepy`、`wandb`（走华为云镜像 `repo.myhuaweicloud.com`）
+- **已补装到该 env**：`mergedeep`、`pytorch-msssim`、`lpips`、`moviepy`、`wandb`（**注意：华为云镜像 `repo.myhuaweicloud.com` 2026-07-15 起不通**，改用清华源 `https://pypi.tuna.tsinghua.edu.cn/simple`；aliyun / pypi.org / hf-mirror 均通）。
+  - **⚠️ 环境非持久**：这些包装在 conda env 里，但 `/cache` 清空 / env 重建后会丢。重建后一条命令补齐：
+    `$PYBIN -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple lpips mergedeep pytorch-msssim moviepy wandb`
+  - **⚠️ wandb 会顺带升级 `huggingface_hub` 到 ≥1.0**，与 transformers 4.53.1 的 `<1.0` 约束冲突 → `import transformers` 崩。补装后**必须降回**：`$PYBIN -m pip install "huggingface-hub>=0.30.0,<1.0"`（0.36.2 验证可用），再 `$PYBIN -c "import transformers"` 复验。
+  - lpips 首用会下 VGG16（528MB）到 `~/.cache/torch/hub`，走 pytorch.org 直连即可。
 - **decord 无 aarch64 轮子**：已把 `datasets/video_dataset.py` 的 `import decord` 改成惰性导入（`_decord()`），null128 假数据路径不受影响；真实视频解码需后端（opencv/pyav），待真实数据阶段补。
 
 激活环境（本机 conda init 异常，直接用绝对路径 python）：

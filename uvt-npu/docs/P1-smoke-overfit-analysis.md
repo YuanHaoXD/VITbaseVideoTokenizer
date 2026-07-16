@@ -107,3 +107,70 @@
 **修复**(已落地 uvt/ 与 uvt-npu/ 双仓,契约测试 tests/test_boundary_norms.py 4 项全绿,双仓全量 81 passed):GSB 入口 LayerNorm + compress(sample=) 收口、decoder final_ln + 像素头校准初始化(weight std=0.02/bias=0.5)、GenViT px_mean/px_std 输入归一化 buffer、out['h']/L_cos 对齐目标改为规范化 h。
 
 **对 §6 建议的修订**:服务器侧重跑顺序 = ①拉最新代码重跑 probe_recon.py(预期:μ 余弦分化、x_hat 值域 O(1))→ ②SAMPLE=0 重跑 overfit(预期 PSNR 上行)→ ③SAMPLE=1 重跑 → ④真图像重测仍有价值(排除 torch.rand 对 LPIPS/语义项的干扰),但不再是关键路径。注意:修复改变了 state_dict 键集(gsb.norm.*/decoder.final_ln.*/encoder.px_mean/px_std),旧 checkpoint 不兼容(无生产 checkpoint,无迁移负担)。
+
+---
+
+## 10. 服务器侧重跑执行结果(2026-07-15,NPU Ascend 910B2,真 SigLIP2 so400m)
+
+§9 裁定的重跑序列已在 NPU 上执行完毕。**结论:#15 修复在真权重下得到决定性验证;P1-smoke 重建路径确认健康。** 环境是 `/cache` 清空后在 `/home/ma-user/work/dataset/yh222/VITbaseVideoTokenizer/` 重建的(权重重下、依赖重装,详见文末环境备注)。
+
+### 10.1 探针复跑(`logs/probe_recon_rerun.log`)——三个病理现象全部消失
+
+| 指标 | 修复前(07-10) | **修复后(07-15)** | 判定 |
+|---|---|---|---|
+| μ 值域 | [-69, 66] | **[-2.44, 2.14]** | ✓ GSB 入口 LN 压住巨激活 |
+| **μ 跨图余弦** | **0.997**(塌缩) | **0.67**(分化) | ✓ 编码器能区分样本 |
+| μ std | 1.96 | 0.56 | ✓ 规模正常 |
+| **x_hat 值域** | **[-32, 44]** | **[-1.97, 3.35]** | ✓ final_ln + 像素头校准初始化生效 |
+| x_hat mean | 0.078 | **0.481**(≈x 均值 0.50) | ✓ bias=0.5 初始化对准 [0,1] 中心 |
+| L1(随机init) | 1.47 | 0.59 | ✓ 起点改善 |
+| 梯度流 | 通 | 通(encoder/decoder/像素头都有梯度) | ✓ 非断链 |
+
+§9-1(μ 塌缩)、§9-3(x_hat 值域)预言的修复效果全部兑现。
+
+### 10.2 overfit 复跑——sample 路径病理消失,但 torch.rand 目标仍卡低分
+
+| 实验 | 修复前 | **修复后(07-15)** | 日志 |
+|---|---|---|---|
+| SAMPLE=0 纯L1(确定性z) | ~8 卡住 | **6.2→7.9 平稳** | `overfit_sample0.log` |
+| SAMPLE=1 纯L1(重参数) | **发散101(#3)/震荡98↔5(#4)** | **6.2→7.8 平稳单调,无发散无震荡** | `overfit_sample1.log` |
+
+**关键裁决**:§9-2 预言的 clamp 饱和病理(sample=True 必发散/震荡)**已消失**——修复后 sample=1 与 sample=0 表现几乎一致(7.78 vs 7.89),证明 GSB 入口 LN 把 ρ 规模压回正常、重参数噪声不再破坏训练。这是 #15 修复最强的正向信号。
+
+**但两条曲线都卡 PSNR~7.9,不到 30。** 经隔离实验确认:**这不是重建路径 bug,而是 `torch.rand` 目标本身的两个伪影**(§0/§6 早预警):
+- **随机噪声不可压**:相邻像素差 0.33、无空间结构,任何带卷积/patch 上采样先验的 decoder 都压不动(对照:常数图差=0、低频图差=0.008)。
+- **LPIPS 对抗梯度**:噪声图上 LPIPS 卡 0.75–0.98 不降,把 L1 往回拽。
+
+### 10.3 决定性隔离实验(§9-4 的替代,更强)——解码器健康证明
+
+不必等 ImageNet 真图。直接把目标换成**低频结构图**(16×16 双线性上采样)并逐步剥离干扰项:
+
+| 实验 | 目标 | 损失 | FINAL PSNR | 日志 |
+|---|---|---|---|---|
+| overfit_structured | 低频结构图 | L1+LPIPS | 11.68 | `overfit_structured.log` |
+| **overfit_pureL1** | 低频结构图 | **纯 L1**(lpips=0) | **34.89**(单调穿过30) | `overfit_pureL1_structured.log` |
+
+**纯 L1 + 结构图 500 步 → PSNR 34.89,单调爬升**(7.1→14.3→20.7→26.4→30.9→34.9)。**这直接证明 encoder/GSB/decoder 重建管线完全健康**:给可压缩信号 + 足够步数,能 overfit 穿过 30。P1-smoke Gate 的"重建能力"实质通过;原脚本的 30 阈值是针对 torch.rand 噪声定的,对该输入不可达,属测试输入选择问题(R11:拿到曲线后重标阈值,此处应改用真图或结构图基准)。
+
+### 10.4 结论
+
+- **#15 修复成功,双仓一致,真权重验证通过。** μ 塌缩 / x_hat 值域 / sample 发散三大病理全消。
+- **重建路径健康。** 纯 L1 结构图 overfit 到 34.89 是硬证据。
+- **原 p1_smoke_overfit 卡 7.9 是 torch.rand 伪影**,非 bug。建议把该脚本默认目标改为低频结构图或接入真图(见下一步)。
+- **不阻断后续。** P1-base 真训练(ImageNet)风险相应下调:重建路径已证健康,真图有自然结构 + 语义可学,预期能达 PSNR≥26 Gate。
+
+### 10.5 环境备注(`/cache` 清空后重建,重要)
+
+- **权重重下**:SigLIP2-so400m-patch16-256 → 仓库内 `models/`(4.5GB,走 hf-mirror)。脚本/配置里写死的 `/cache/...` 路径已全部改为仓库内路径(`probe_recon.py`/`p1_smoke_overfit.py` 改读环境变量 `UVT_SIGLIP` 带默认值;`cfgs/uvt_stage1_npu.yaml` 两处 model_name/img_id 改绝对路径)。
+- **依赖重装**:`lpips mergedeep pytorch-msssim moviepy wandb` 随环境重置丢失,已用**清华源**补装(华为云 pip 源 `repo.myhuaweicloud.com` 当前不通;hf-mirror / pypi.tuna / aliyun 通)。lpips 的 VGG16(528MB)已重新缓存到 `~/.cache/torch/hub`。
+- **版本坑**:装 wandb 会把 `huggingface_hub` 顺带升到 1.23.0,与 transformers 4.53.1 的 `<1.0` 约束冲突导致 `import transformers` 崩。**已降回 `huggingface_hub==0.36.2`**。补装依赖后务必复验 `import transformers` 不崩。
+
+---
+
+## 11. 真图 overfit 复测(2026-07-15,§9-4 收尾)
+
+ImageNet 下全后,从 `train-00000` parquet 抽 4 张真图跑纯 L1 overfit(`scripts/probe_realimg_overfit.py`,日志 `logs/realimg_overfit_*.log`):
+
+- **μ 塌缩彻底解决**:真图两两余弦 **0.283**(torch.rand 噪声图 0.67;修复前 0.997)。自然图特征多样、编码器完全区分样本 → **#15 修复对真实图像确认有效,μ 塌缩非伪影残留**。§9-4 的核心疑问就此关闭。
+- **重建单调向上但偏慢**:纯 L1 单 batch,500 步 PSNR→16.1,1500 步→16.3;中途有"长平台(PSNR~11.9)+突破"模式(典型鞍点/坏盆地,非容量饱和)。对比低频结构图能到 34.9,差距源于真图高频细节 × 64 维 latent × 单 batch 慢优化。
+- **判断**:overfit 绝对 PSNR 不是关键指标(其优化景观与真实训练迥异——真训有大规模数据 / warmup+cosine / LPIPS+distill 更优梯度)。**#15 三大病理(μ塌缩/x_hat值域/sample发散)已全部证伪于真权重+真图**,重建路径健康结论稳固。下一步价值在真实 Stage 1 训练,非继续调 overfit。

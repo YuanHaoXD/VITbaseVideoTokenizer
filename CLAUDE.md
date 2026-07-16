@@ -6,12 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **UVT (Unified Video Tokenizer)** — a research project building a single ViT (SigLIP2-So400M initialized) that is simultaneously: image+video unified (1 anchor frame + 16-frame clip protocol), reconstruction+semantic unified (high-fidelity pixel recon *and* linearly-readable semantics), and generatable (a DiT trains cleanly on the frozen latent). Borrowed from Hydra-X's three designs (tubelet causal attention / hierarchical temporal patchify / Decompressor dual-teacher distillation), deliberately narrowed to "tokenizer only, no UMM". Read `docs/08` first for the mental model, then `docs/01`–`05` for architecture/code/data/experiments/task-book.
 
-## Two repos, two environments (do not cross-wire)
+## Three repos, three environments (do not cross-wire)
 
-- **`uvt/`** — the main repo (forked from LARP, MIT). Real training happens here. Entry is `train.py` (torchrun, bare DDP, no Lightning).
+- **`uvt/`** — the CUDA reference repo (forked from LARP, MIT). CPU-testable, device code hardcodes `torch.cuda`. **Do not train here on this NPU server** — it's the read-only source of truth that `uvt-npu/` mirrors.
+- **`uvt-npu/`** — **the actual server-side working copy on this machine (Ascend 910B2 NPU).** A verified port of `uvt/` (model/loss/teacher/data code byte-identical; only the framework layer differs). All real work on this server happens here. Read `uvt-npu/NPU_NOTES.md` first — it is the porting log and the operational truth for this box. Single-card + 8-card HCCL DDP smokes are green.
 - **`phase-b-omnitokenizer/`** — the Phase B boundary-condition experiment repo (forked from OmniTokenizer, MIT). **Runs in its own locked docker** (PL 1.5.4, torch 2.2.1/cu118). It is a scientific control asking whether Hydra-X's "less is more" findings survive without pretraining priors — forked OmniTokenizer with two added knobs: `--temporal_attn_mode {tubelet,causal,full}` and `--temporal_fold_mode {single,learned,avgpool}`. See `phase-b-omnitokenizer/docs/phase-b-changes.md`.
 
-Binaries (`*.pt/*.ckpt/*.pth/*.bin/*.safetensors`) and datasets are gitignored — download per `docs/07`. SigLIP2-So400M-patch16-**256** (`google/siglip2-so400m-patch16-256`) is a hard prerequisite: it is "one weight, three uses" (Gen/Sem-ViT + decoder init, frozen image teacher, zero-shot text tower).
+**When editing model/loss/teacher/data logic, change it in BOTH `uvt/` and `uvt-npu/`** (they must stay in sync — the NPU port deliberately left those files untouched). Framework-layer files (`train.py`, `trainers/*`, `utils/accel.py`, `datasets/video_dataset.py`, `cfgs/*_npu.yaml`, `conftest.py`) diverge on purpose — see the NPU port table below.
+
+Binaries (`*.pt/*.ckpt/*.pth/*.bin/*.safetensors`) and datasets are gitignored — download per `docs/07`. SigLIP2-So400M-patch16-**256** (`google/siglip2-so400m-patch16-256`) is a hard prerequisite: it is "one weight, three uses" (Gen/Sem-ViT + decoder init, frozen image teacher, zero-shot text tower). On this box it is **already downloaded** at the repo-root `models/siglip2-so400m-patch16-256/`.
 
 ## Commands
 
@@ -49,6 +52,35 @@ OOM → `--opts grad_accumulates 8` (global batch unchanged). `--csv_file null12
 
 ### Phase B
 Separate docker. `python vqgan_train.py --tokenizer omnitokenizer --temporal_attn_mode <MODE> --temporal_fold_mode <FOLD> ... --seed 1`. Full run matrix and the compression-ratio caveat in `phase-b-omnitokenizer/docs/phase-b-changes.md` §4.
+
+## Running on THIS server (`uvt-npu/`, Ascend 910B2)
+
+This box is 8× Ascend 910B2 (aarch64 Kunpeng-920, CANN 8.2.RC1), **no CUDA**. Full detail in `uvt-npu/NPU_NOTES.md`; the essentials:
+
+- **Always `source scripts/env_npu.sh` first.** It exports `TORCH_DEVICE_BACKEND_AUTOLOAD=0` (critical — without it `torchrun`/`torch.distributed.run` imports torch before the triton shim and crashes), `HF_ENDPOINT=https://hf-mirror.com` (huggingface.co is unreachable here; mirror works), and `PYBIN` (the conda python). **conda init is broken on this box — invoke python via the absolute `$PYBIN` path**, not `python`.
+- **Two shims you must not remove** (both in the port log): (1) a triton `AttrsDescriptor` placeholder patched before `import torch_npu` in three redundant places (`utils/accel.py` top, `train.py` top, `conftest.py`) — local triton 3.6 renamed it and no aarch64 3.2 wheel exists; (2) `import torch_npu` is done *explicitly* by `utils/accel.py` after the shim, not by autoload.
+- **`utils/accel.py` is the device facade.** Framework code does `from utils import accel` then `accel.is_available/set_device/autocast/GradScaler/...` and `accel.DIST_BACKEND` (`hccl` on NPU). Never reintroduce raw `torch.cuda.*` / `backend='nccl'` in `uvt-npu/`.
+- **NPU config is `cfgs/uvt_stage1_npu.yaml`** (= `uvt_stage1.yaml` but `compile: false` — torch.compile's inductor→triton path is fragile on NPU; keep it off until proven). DDP runs with `find_unused_parameters=True` (image batches skip the Decompressor).
+- **decord has no aarch64 wheel** → `datasets/video_dataset.py` imports it lazily (`_decord()`); the `null128` fake-data path is unaffected, but real video decode needs an opencv/pyav backend (deferred to the real-data stage).
+
+```bash
+cd uvt-npu && source scripts/env_npu.sh
+
+# tests (18 files; triton shim applied via conftest.py)
+$PYBIN -m pytest tests/ -v
+
+# single-card tiny smoke (input_size 64 — tiny backbone pos-emb is 4×4; dims dropped to 64)
+$PYBIN train.py --cfg cfgs/uvt_stage1_npu.yaml --csv_file null128 \
+    --batch_size 2 --frame_num 17 --input_size 64 --num_workers 0 --out_path /cache/_smoke --replace \
+    --opts compile false model.args.tiny true teachers.tiny true teachers.vid_mock true \
+           teachers.vid_mock_args.dim 64 teachers.vid_mock_args.spatial_tokens 16 \
+           distill.student_dim 64 distill.teacher_img_dim 64 distill.teacher_vid_dim 64 \
+           max_epoch 1 grad_accumulates 1 model.args.lpips_weight 0.0
+
+# 8-card HCCL DDP smoke: same flags via `$PYBIN -m torch.distributed.run --nproc_per_node=8 train.py ...`
+# P1-smoke Gate (production model, real SigLIP2, PSNR>30 overfit): $PYBIN scripts/p1_smoke_overfit.py
+```
+Production training uses `tiny:false` + `--input_size 256` and drops the tiny/mock dim overrides. Only Stage 1 has been exercised end-to-end on NPU; Stage 2 (GAN) / Stage 3 (estimate_latent_stats) share code paths and pass DDP but should be smoke-tested once under real weights. The `scripts/train_larp_*.sh` + `cfgs/larp_*.yaml` are the upstream LARP baselines (reproduction controls), not the UVT pipeline.
 
 ## Architecture: the single-ViT pipeline
 
@@ -109,6 +141,9 @@ These are fixed; the point is to recognize the *class* of issue when deps drift:
 | `docs/03` | Before running eval (data pipeline + the single eval protocol + 5-anchor calibration) |
 | `docs/04` | Before designing experiments (per-experiment enum + Gates + stat discipline + risk register) |
 | `docs/05` | Before implementing any module (per-file task cards, interfaces frozen to signature) |
+| `docs/06` | Contract revisions (§6) + real-weight verification (§9) — where code-vs-spec conflicts are resolved |
 | `docs/07` | First time running on the server (env/weights/data/commands) |
+| `uvt-npu/NPU_NOTES.md` | **Before running anything on this box** — NPU port log, env, two must-keep shims, run commands |
+| `uvt-npu/docs/P1-smoke-overfit-analysis.md` | The #15 boundary-norm story (real-weight scale pathology diagnosis) |
 | `docs/损失详情.md` | When tuning/diagnosing losses (what each loss is/why/runaway symptoms) |
 | `docs/background/` | Deprecated early research — context only, superseded by `docs/01`–`08` |
