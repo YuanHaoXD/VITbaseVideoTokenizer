@@ -1,0 +1,136 @@
+# UVT Stage 1 · ImageNet 大规模训练配置（NPU）· 冲击 Hydra-X 指标。
+# 派生自 uvt_stage1_imagenet_npu.yaml（验证配置）。差异：max_shards 放大到 80（~35万图，
+# in_memory），max_epoch 拉长，开启周期性存盘（持久 NFS）。真·全量 1.28M 加载器就绪后另开 run。
+#
+# === 8 卡大规模训练启动 ===
+#   python -m torch.distributed.run --nproc_per_node=8 train.py --cfg cfgs/uvt_stage1_imagenet_full_npu.yaml \
+#       --csv_file null128 --batch_size 8 --frame_num 17 --input_size 256 --num_workers 8 \
+#       --out_path /home/ma-user/work/dataset/yh222/uvt_runs/full01 --replace
+#
+# 注：--csv_file 仅供 train_dataset 占位节（LARP make_cfg 预处理需要），真实数据走 joint_dataset。
+
+trainer: uvt_tokenizer_trainer
+
+stage: 1
+lambda_dist: 0.5
+clip_grad_max_norm: 0.0
+latent_stats_n: 10000
+data_version: 'imagenet-1k-parquet-full40'
+adr_versions: ['ADR-3@(0,6)', "ADR-4'@iso", 'ADR-8@hybrid']
+paired_with: []
+
+model:
+  name: uvt_tokenizer
+  args:
+    model_name: '/home/ma-user/work/dataset/yh222/VITbaseVideoTokenizer/models/siglip2-so400m-patch16-256'
+    gen_depth: 13
+    c_latent: 64
+    fold_positions: [0, 6]
+    unfold_positions: [21, 27]
+    attn_mode: 'tubelet'
+    rope_dims: 32
+    decoder_init: 'siglip'
+    use_cos_consistency: true
+    kl_weight: 1.0e-6
+    tiny: false
+    l1_weight: 1.0
+    lpips_weight: 1.0
+    cos_weight: 1.0
+    distill_img_patch_weight: 1.0
+    distill_img_pool_weight: 1.0
+    distill_vid_weight: 1.0
+
+distill:
+  student_dim: 1152
+  teacher_img_dim: 1152
+  teacher_vid_dim: 1152
+
+gan:
+  disc_loss: 'ns_smooth'
+  disc_weight: 0.3
+  disc_factor: 1.0
+  lecam_weight: 1.0e-3
+  lecam_ema_decay: 0.999
+  r1_gp_weight: 0.0
+  d_update_freq: 5
+  disc_start: 0
+  dis_lr_multiplier: 1.0
+  dis_adam_betas: [0.5, 0.9]
+
+teachers:
+  img_id: '/home/ma-user/work/dataset/yh222/VITbaseVideoTokenizer/models/siglip2-so400m-patch16-256'
+  tiny: false
+  vid_mock: true                       # 纯图像验证：免 InternVideo
+  vid_mock_args: { frames: 16, spatial_tokens: 256, dim: 1152 }
+  vid:
+    teacher_id: 'OpenGVLab/InternVideo2-Stage2_1B'
+
+# 占位节：仅满足 LARP make_cfg 预处理（train.py strip cls_vid_num）；真实训练走 joint_dataset。
+train_dataset:
+  name: video_dataset
+  args:
+    root_path: data/metadata
+    split: train
+    frame_num: $frame_num$
+    rand_augment: 'no'
+    csv_file: $csv_file$
+    cls_vid_num: '-1_-1'
+    crop_size: $input_size$
+    scale: 1.0
+    aspect_ratio: 1.0
+    rand_flip: 'yes'
+    use_all_frames: false
+    pre_load: false
+  loader:
+    batch_size: $batch_size$
+    num_workers: $num_workers$
+
+# 纯图像单源：ImageNet-1k parquet 直读。子集验证 max_shards=4（~1.7 万图）、in_memory 免跨片抖动。
+joint_dataset:
+  seed: 0
+  num_workers: $num_workers$
+  sources:
+    - dataset:
+        name: parquet_image_dataset
+        args:
+          parquet_dir: '/home/ma-user/work/dataset/yh222/Datasets/imagenet-1k/data'
+          file_glob: 'train-*.parquet'
+          crop_size: $input_size$
+          split: train
+          rand_flip: 'yes'
+          max_shards: 40
+          in_memory: true
+      batch_size: $batch_size$
+      ratio: 1
+
+test_dataset:
+  name: video_dataset
+  args: { root_path: data/metadata, frame_num: $frame_num$, cls_vid_num: '-1_-1',
+          crop_size: $input_size$, use_all_frames: false, pre_load: false }
+  csv_paths: { ucf101_val: '' }
+  loader: { batch_size: $batch_size$, num_workers: $num_workers$ }
+
+optimizer:
+  name: adamw
+  loss_name: adam
+  args: { lr: 2.0e-4, betas: [0.9, 0.95], weight_decay: 0.05 }
+  loss_args: { lr: 2.0e-4, betas: [0.5, 0.9] }
+  lr_type: cosine
+  warmup_epoch: 1
+  min_lr_mult: 0.05
+
+max_epoch: 60
+eval_epoch: 100000000                  # 关闭周期 eval（test_dataset 无真实 csv）
+vis_epoch: 100000000
+latest_interval: 1
+save_epoch: 5
+save_best: false
+stepwise_logging: true                 # 逐 step 打印,便于看 PSNR 曲线
+ema_decay: '0.9999_0.999'
+
+use_amp: true
+amp_dtype: 'bfloat16'
+compile: false
+compile_mode: 'default'
+flash_attn: false
+grad_accumulates: 1                    # 短程验证不累积,曲线更直观
