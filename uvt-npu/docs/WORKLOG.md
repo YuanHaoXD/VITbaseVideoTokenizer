@@ -29,10 +29,13 @@
 5. ✅ 单卡 tiny 冒烟复验(恢复后环境):Epoch 1 干净通过,loss 2.94→2.08 单调降,各损失有限,稳态 ~5 it/s → 训练入口在恢复后的环境端到端可跑。
 6. ✅ **接入 ImageNet parquet + 真实 Stage 1 训练路径验证通过**。方案 B(用户选定):新增 `datasets/parquet_image_dataset.py`(D-2b,双仓同步,`@register`,直读 HF parquet、输出 D-2 冻结契约、复用 ImageTransform),`datasets/__init__.py` 注册,`cfgs/uvt_stage1_imagenet_npu.yaml`(纯图像单源验证配置),`tests/test_parquet_dataset.py`(3 项契约测试,双仓,数据/pyarrow 缺失自动 skip)。单卡真权重(#params=889.2M)短程验证:PSNR 2.64→8.95(500 步单调上行)、loss 3.17→1.475(单调降)、0 报错 → **真实训练路径健康、parquet 接入端到端可用**。详见 `docs/P1-smoke-overfit-analysis.md` §12。测试:95 项收集通过,dataset 邻近 7 passed。
 
-**本会话结论**:进度保存机制(WORKLOG+记忆)已建;上一轮 #15 成果已安全入库;环境已恢复;真实图像 Stage 1 训练路径已在真权重下打通验证。
+**本会话结论**:进度保存机制(WORKLOG+记忆)已建;上一轮 #15 成果已安全入库;环境已恢复;真实图像 Stage 1 训练路径已在真权重下打通验证(单卡 + 8 卡 HCCL)。3 个提交已 push 到 origin/main;8 卡复验后再补 1 个提交。
+
+7. ✅ **push 到 origin/main**(`6c7e8a0..1e0947e`)——GitHub 多一层备份。
+8. ✅ **8 卡 HCCL 真权重复验**(补 NPU_NOTES §6 遗留项①):272 步/epoch(8716/8卡/bs4,分片正确)、PSNR 2.60→8.54、曲线与单卡几乎重合(HCCL 梯度平均正确)、`find_unused_parameters` 正确处理纯图像 batch、228.6s 干净退出 0 报错。详见 `P1-smoke-overfit-analysis.md` §12.1。
 
 **下一步(下个助手接手)**:
-- ① 8 卡 HCCL 真权重复验(当前 8 卡仅 tiny 验过,NPU_NOTES §6 遗留);命令见 `cfgs/uvt_stage1_imagenet_npu.yaml` 头注释。
+- ~~① 8 卡 HCCL 真权重复验~~ ✅ 已完成(§12.1)。
 - ② 扩数据(去 `max_shards`/接全量 294 分片,注意全量跨片洗牌抖动 → 见 `parquet_image_dataset.py` docstring 末的方案)+ 加长训练,观察 PSNR 爬到 Gate(≥26)。
 - ③ 视频教师上线(`teachers.vid_mock false` + InternVideo2,已在 `yh222/models/`)与真实视频源(decord 后端遗留,NPU_NOTES §6)。
 

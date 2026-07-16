@@ -205,3 +205,17 @@ bs=8,bf16,`tiny:false`。
 **下一步**:① 8 卡 HCCL 在真权重下复验(当前 8 卡仅 tiny 验过,NPU_NOTES §6 遗留项);
 ② 扩数据量(去 max_shards/接全量分片,注意全量跨片洗牌抖动,见 parquet_image_dataset docstring)
 + 加长训练观察 PSNR 爬升到 Gate(≥26)。
+
+### 12.1 8 卡 HCCL 真权重复验(2026-07-15,补 NPU_NOTES §6 遗留项①)
+
+同配置 8 卡(`torch.distributed.run --nproc_per_node=8`,bs=4/卡,真 so400m 889M):
+
+| step | 1 | 50 | 100 | 150 | 200 | 272(末) |
+|---|---|---|---|---|---|---|
+| PSNR | 2.60 | 5.33 | 7.10 | 7.83 | ~8.2 | 8.54 |
+| loss | 3.12 | 1.93 | 1.68 | 1.59 | — | 1.496 |
+
+- **DistributedSampler 分片正确**:8716 图 /8 卡 /bs4 = 272 步/epoch,与理论一致。
+- **HCCL 梯度平均产出正确收敛**:8 卡曲线与单卡几乎重合(150 步 7.83 vs 单卡 7.84)。
+- **`find_unused_parameters` 正确处理纯图像 batch**(is_video=False → Decompressor 不参与,契约⑥)——无 DDP reducer 报错。
+- Epoch 1 干净跑完 228.6s,0 报错,launcher 正常退出。**→ 真权重 8 卡 DDP 路径打通,NPU_NOTES §6 遗留项①关闭。**
