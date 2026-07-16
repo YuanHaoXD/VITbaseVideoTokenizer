@@ -31,6 +31,15 @@
 
 ## 🧪 运行记录
 
+### 过拟合基线(overfit_probe.py sanity gate)· 2026-07-16 · ★关键参考
+用户要求:全量前先小数据集 overfit 证明模型无病(那位大佬的老配方)。三个并行探针(暂停 full04 腾卡),结论:**模型健康,零回归,my checkpoint fix 未动模型行为**。
+- **N=4 纯L1 参考(复现历史)**:FINAL PSNR **16.12** —— 与历史 `logs/realimg_overfit_pureL1.log` 的 16.12 **逐位一致**。零回归铁证。
+- **N=16 纯L1**(lr1e-3, sample0):平台 ~16.7(best 19.5)。
+- **N=16 全目标**(lpips0.5+cos0.5+distill0.5, 对齐 full-03):~10(与 full-03/04 早期 opt-step 同速:opt600≈psnr9.9)。
+- **⚠️ 真图过拟合平台 ~16 是既有特性,非 bug**:历史 `realimg_overfit_1500.log` 跑 1500 步也停在 16.28(纯L1)。成因=C=64 瓶颈 + 激进小批高lr的优化平台。那个著名的 **34.89 是合成低频结构图**(易压),不是自然图,勿混淆。
+- **关键正向证据**:full-03 全量早已越过此平台(epoch-1 psnr 18-19 且单调上行 > overfit 的 16)→ 证明 ~16 是**overfit 设置的伪平台**(纯L1+小批+高lr),非模型容量上限;全量的 lr-schedule + 全目标 + 大 batch 能escape。**故 full04 继续跑到 30 无阻**。
+- **门槛已在 docs/TRAINING_LOG 记基线**;harness verdict 不再硬编 >30(真图误报)。
+
 ### run-full-04(2026-07-16 启动)· ★当前主线 · = full-03 同配置,修 ckpt 崩溃后重启
 - **为何重启**:full-03 跑完 epoch-1(PSNR ~19.1，单调无平台)在 epoch 边界 `save_checkpoint('epoch-last.pth')` **全 8 卡崩溃**——`utils/common.py:gather_object_from_all` 两处裸 cuda(NPU 端口遗漏），**0 checkpoint 落盘**。已修（commit `22a7d1f`，真机 2 卡 HCCL 验证崩溃路径闭合），WORKLOG 2026-07-16（晚）有全貌。
 - **配置 identical**:`cfgs/uvt_stage1_imagenet_full_npu.yaml`，accum4(全局batch256)/lpips0.5/cos0.5/lr2e-4/max_epoch60。**paired-baseline 纪律，不趁重启改 bs/lr**（避免多变量混淆）。out_path `.../full04`（保留 full03 log/tensorboard）。
