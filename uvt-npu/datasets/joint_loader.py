@@ -57,22 +57,31 @@ class JointLoader:
             self.world_size, self.rank = 1, 0
 
         self.names, self.ratios, self.loaders, self.samplers = [], [], [], []
+        any_pre_sharded = False
         for i, src in enumerate(sources):
             ds, bs = src['dataset'], int(src['batch_size'])
             ratio = int(src['ratio'])
-            assert ratio >= 1, f"源 {i} 的 ratio 必须为正整数，得到 {src['ratio']}"
+            assert ratio >= 1, f"源 {i} 的 ratio 必须为正整数,得到 {src['ratio']}"
             self.names.append(src.get('name', f'{type(ds).__name__}_{i}'))
             self.ratios.append(ratio)
 
-            if self.world_size > 1:
+            # pre_sharded:该源数据集已按 rank 自行分片(如 ParquetImageDataset(rank_shard=True)),
+            # 不能再套 DistributedSampler(否则每 rank 只训到 1/world_size² 数据)。改用带种子的
+            # 本地 shuffle——与单进程路径同一分支,同 seed 可复现。**加法式**:未开启此 flag 的源
+            # 行为与改动前逐字节一致(仍走 world_size>1 → DistributedSampler)。
+            pre_sharded = bool(src.get('pre_sharded', False))
+            any_pre_sharded = any_pre_sharded or pre_sharded
+
+            if self.world_size > 1 and not pre_sharded:
                 sampler = DistributedSampler(
                     ds, num_replicas=self.world_size, rank=self.rank,
                     shuffle=True, seed=self.seed, drop_last=drop_last)
                 generator = None
                 shuffle = False
             else:
+                # 单进程,或 pre_sharded 源(数据集已 rank 预分片):固定种子 generator 驱动
+                # 本地 shuffle,两次实例化同序;逐 epoch 由 generator 状态自然推进重洗。
                 sampler = None
-                # 单进程：固定种子 generator 驱动 RandomSampler，两次实例化同序
                 generator = torch.Generator()
                 generator.manual_seed(self.seed + i)
                 shuffle = True
@@ -87,6 +96,23 @@ class JointLoader:
         self._window = sum(self.ratios)
         cycles = max(1, min(len(ld) // r for ld, r in zip(self.loaders, self.ratios)))
         self.steps_per_epoch = cycles * self._window
+        # pre_sharded 源各 rank 分到的分片数/行数可能不等(294 片 8 卡 → 部分 rank 37 片、部分
+        # 36 片,末片行数亦不同)→ steps_per_epoch 逐 rank 不同 → DDP 在 allreduce 处死锁。
+        # 故仅当存在 pre_sharded 源且分布式已起时,跨 rank 取 min 对齐(长 rank 每 epoch 略欠采,
+        # 跨 epoch generator 重洗弥补——与"长源欠采样"同一设计哲学)。无 pre_sharded 源时不引入
+        # 任何集合通信,非 flag 源行为完全不变。
+        if any_pre_sharded and dist.is_available() and dist.is_initialized() \
+                and self.world_size > 1:
+            # all_reduce 的 tensor 必须在加速器上:HCCL(NPU)/NCCL(GPU)均不支持 CPU tensor,
+            # 传 CPU tensor 会报错/挂死。accel.device() 在 uvt-npu 给 npu;uvt(无 accel)退 cuda。
+            try:
+                from utils import accel
+                _dev = accel.device()
+            except Exception:
+                _dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            t = torch.tensor([self.steps_per_epoch], device=_dev)
+            dist.all_reduce(t, op=dist.ReduceOp.MIN)
+            self.steps_per_epoch = int(t.item())
         self._exhaust_count = [0] * len(self.loaders)
 
         self._schedule = self._build_schedule(self.epoch)

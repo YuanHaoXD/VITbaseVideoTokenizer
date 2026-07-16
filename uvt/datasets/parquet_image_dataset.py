@@ -21,8 +21,9 @@
 已知边界:部分 ImageNet 图为灰度('L')/CMYK → `.convert('RGB')` 统一为 3 通道。
 
 ⚠️ 全量训练的跨片洗牌抖动:`in_memory=False` 下若 sampler 全排列,单片缓存会被反复换出。
-全量阶段方案(未来):要么 `in_memory=True` 且内存够(128 万 bytes≈140GB 不可行),要么改用
-分片粒度洗牌 / pyarrow row-group 流式(留待全量阶段,当前短程验证 max_shards 小,无此问题)。
+全量阶段方案(已实现):`rank_shard=True` + `in_memory=True` —— 每 rank 只持有 files[rank::
+world_size](294 片 8 卡≈37 片/rank≈16GB/rank,主机内存充足),rank 内本地洗牌无跨片抖动;
+DataLoader 侧配 JointLoader `pre_sharded: true` 跳过 DistributedSampler(否则二次分片)。
 """
 import glob as _glob
 import io
@@ -32,11 +33,21 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 import torch
+import torch.distributed as dist
 from PIL import Image
 from torch.utils.data import Dataset
 
 from datasets import register
 from datasets.image_dataset import ImageTransform  # 复用 D-2 冻结预处理
+
+
+def _resolve_rank(rank, world_size):
+    """(rank, world_size) 缺省时从 torch.distributed 读；不可用则退 (0, 1)。"""
+    if rank is not None and world_size is not None:
+        return int(rank), int(world_size)
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_rank(), dist.get_world_size()
+    return 0, 1
 
 
 @register('parquet_image_dataset')
@@ -53,11 +64,18 @@ class ParquetImageDataset(Dataset):
         max_samples: >0 时全局样本上限(子集验证)。
         in_memory:   True 时预载选中分片两列进内存(子集验证首选,无跨片抖动)。
         image_col/label_col: 列名(HF imagenet-1k 为 'image'/'label')。
+        rank_shard:  True 时按 rank 步进切片(files[rank::world_size]),每 rank 只索引/
+                     预载自己那 ~1/world_size 份分片。**全量 8 卡 DDP 高效加载的关键**:
+                     配合 in_memory=True,每 rank 常驻 ~1/N 分片(8 卡×37 片≈16GB/rank),
+                     且 DataLoader 侧必须 opt-in 跳过 DistributedSampler(见 JointLoader
+                     `pre_sharded`),否则会二次分片、每 rank 只训到 1/N² 数据。
+        rank/world_size: rank_shard 的切片坐标;缺省从 torch.distributed 读,不可用退 (0,1)。
     """
 
     def __init__(self, parquet_dir, file_glob='train-*.parquet', crop_size=256,
                  split='train', rand_flip='yes', max_shards=0, max_samples=0,
-                 in_memory=False, image_col='image', label_col='label'):
+                 in_memory=False, image_col='image', label_col='label',
+                 rank_shard=False, rank=None, world_size=None):
         assert split in ('train', 'test'), f'Unknown split: {split}'
         self.crop_size = crop_size
         self.image_col = image_col
@@ -68,6 +86,17 @@ class ParquetImageDataset(Dataset):
         assert files, f'无 parquet 分片:{os.path.join(parquet_dir, file_glob)}'
         if max_shards > 0:
             files = files[:max_shards]
+        # rank 分片:各 rank 只持有 files[rank::world_size]。在 max_shards 截取之后做,
+        # 从而各 rank 分片两两无交集、并集 = 上一步选中的全集(见 tests/test_parquet_rank_shard)。
+        if rank_shard:
+            self.rank, self.world_size = _resolve_rank(rank, world_size)
+            files = files[self.rank::self.world_size]
+            assert files, (
+                f'rank {self.rank}/{self.world_size} 分片后无分片——'
+                f'world_size 超过分片数({max_shards or "全部"})?')
+        else:
+            self.rank, self.world_size = 0, 1
+        self.rank_shard = rank_shard
         self.files = files
 
         # 索引:全局 idx -> (分片下标, 分片内行号)。用元数据取行数,不整读分片。

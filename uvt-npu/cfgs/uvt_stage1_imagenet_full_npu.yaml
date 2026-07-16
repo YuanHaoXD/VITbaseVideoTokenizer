@@ -1,11 +1,12 @@
 # UVT Stage 1 · ImageNet 大规模训练配置（NPU）· 冲击 Hydra-X 指标。
-# 派生自 uvt_stage1_imagenet_npu.yaml（验证配置）。差异：max_shards 放大到 80（~35万图，
-# in_memory），max_epoch 拉长，开启周期性存盘（持久 NFS）。真·全量 1.28M 加载器就绪后另开 run。
+# 派生自 uvt_stage1_imagenet_npu.yaml（验证配置）。真·全量 1.28M：joint_dataset 用
+# rank_shard+pre_sharded（每 rank 只常驻 ~37 片 in_memory，8 卡共 ~128GB，无跨片抖动）。
+# max_epoch 拉长，周期性存盘（持久 NFS）。
 #
 # === 8 卡大规模训练启动 ===
 #   python -m torch.distributed.run --nproc_per_node=8 train.py --cfg cfgs/uvt_stage1_imagenet_full_npu.yaml \
 #       --csv_file null128 --batch_size 8 --frame_num 17 --input_size 256 --num_workers 8 \
-#       --out_path /home/ma-user/work/dataset/yh222/uvt_runs/full01 --replace
+#       --out_path /home/ma-user/work/dataset/yh222/uvt_runs/full02 --replace
 #
 # 注：--csv_file 仅供 train_dataset 占位节（LARP make_cfg 预处理需要），真实数据走 joint_dataset。
 
@@ -15,7 +16,7 @@ stage: 1
 lambda_dist: 0.5
 clip_grad_max_norm: 0.0
 latent_stats_n: 10000
-data_version: 'imagenet-1k-parquet-full40'
+data_version: 'imagenet-1k-parquet-FULL-1.28M'
 adr_versions: ['ADR-3@(0,6)', "ADR-4'@iso", 'ADR-8@hybrid']
 paired_with: []
 
@@ -85,7 +86,11 @@ train_dataset:
     batch_size: $batch_size$
     num_workers: $num_workers$
 
-# 纯图像单源：ImageNet-1k parquet 直读。子集验证 max_shards=4（~1.7 万图）、in_memory 免跨片抖动。
+# 纯图像单源：ImageNet-1k parquet 直读，真·全量 1.28M。
+# rank_shard=true：每 rank 只索引 files[rank::world] 的 ~37 片并 in_memory（每 rank ~16GB，
+#   8 卡共 ~128GB，主机 1.5TB 富余），无跨片抖动、无冗余。
+# pre_sharded=true：JointLoader 对该源跳过 DistributedSampler（数据集已 rank 分片，否则二次分片）。
+# 两 flag 必须成对（见 parquet_image_dataset / joint_loader）。
 joint_dataset:
   seed: 0
   num_workers: $num_workers$
@@ -98,10 +103,11 @@ joint_dataset:
           crop_size: $input_size$
           split: train
           rand_flip: 'yes'
-          max_shards: 40
           in_memory: true
+          rank_shard: true
       batch_size: $batch_size$
       ratio: 1
+      pre_sharded: true
 
 test_dataset:
   name: video_dataset

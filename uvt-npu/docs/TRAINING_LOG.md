@@ -22,23 +22,25 @@
 
 ## 🧪 运行记录
 
-### run-full-01(2026-07-15 启动)· 大规模 Stage 1 起步
+### run-full-02(2026-07-15 启动)· 真·全量 1.28M Stage 1 ★当前主线
 - **配置**:`cfgs/uvt_stage1_imagenet_full_npu.yaml`,8 卡,真 so400m(889M),bf16,tubelet,64 维 latent。
-- **数据**:ImageNet parquet,`max_shards=40`(**len=174320**,in_memory,内存占用 261G/1509G)。⚠️ 非全 1.28M——真·全量加载器(rank 分片)由子agent A 并行开发中,就绪后 run-full-02 切全量。
-- **规模**:2723 步/epoch(174320/8卡/bs8),max_epoch=60,存盘到持久盘 `yh222/uvt_runs/full01`(latest 每 epoch、full 每 5 epoch)。
-- **吞吐**:~**1.24 it/s**(8卡~79 img/s),≈37 分钟/epoch。⚠️ 偏低——见问题 P1。
-- **早期曲线**:step1 psnr=2.87 → step144 psnr=8.50(与验证 run 一致);仍在 warmup(lr_m 刚到 0.1)。**远未收敛,曲线随 epoch 滚动更新。**
-- **状态**:进行中(PID 首轮启动)。下个 /loop 唤醒读日志记 epoch-1 收敛 PSNR。
+- **数据**:ImageNet parquet **全 294 片≈1.28M**,rank 分片(每 rank ~16 万图 in_memory,rank0 len=161236)+ pre_sharded。内存 238G/1509G。
+- **规模**:**19609 步/epoch**(=跨rank MIN 对齐;每 rank 训满自己 ~16万、8卡并集=全1.28M/epoch),bs8,max_epoch=60,~4.4h/epoch。
+- **状态**:进行中。step10 psnr=2.42,warmup 起步。**这是冲指标的主线 run。**
 
-### run-08-val(2026-07-15)· 8 卡打通验证(历史,非攻坚)
-- 272 步、PSNR 2.60→8.54(单epoch早期)、HCCL 与单卡一致。仅证路径健康。
+### run-full-01(2026-07-15,已停)· 40 片子集 bootstrap
+- 174320 图子集,psnr 2.87→~9.0(step310,warmup平台),仅为先跑起来;全量加载器就绪后停,切 run-full-02。
 
 ## ⚠️ 问题 & 尝试方案(最新在上)
 
 ### P0(开局)· 全量数据加载的跨片洗牌抖动
 - **问题**:parquet 直读 + DistributedSampler 全排列洗牌 → 单分片 LRU 缓存被反复换出,全 294 分片时 IO 抖动严重(见 `parquet_image_dataset.py` docstring)。
-- **现状方案(临时)**:run-full-01 用 `max_shards=80` + `in_memory=true`(80×~436MB=35GB/rank×8≈280GB,内存 1282GB 富余),规避抖动、先跑起来。
-- **根治方案(子agent A 开发中)**:rank 分片——每 rank 只持有 `files[rank::world]` 并跳过 DistributedSampler,in_memory 全量 1.28M 无冗余(~128GB 总),无抖动。
+- **✅ 已解决(run-full-02)**:rank 分片(每 rank 只 in_memory 自己 `files[rank::world]` ~37 片)+ JointLoader `pre_sharded`(跳过 DistributedSampler)。全 1.28M 无冗余(~128GB)无抖动。子agent A 实现,我复核修了下面两个真机 bug。
+
+### P0b · 全量加载器的两个"隔离测试测不出"的真机 bug(已修)
+- **bug1 · all_reduce CPU tensor**:JointLoader 步数对齐用 `dist.all_reduce` 但 tensor 在 CPU → **HCCL 不支持 CPU tensor,真 8 卡会挂**。子agent只 CPU 模拟测过。**修**:tensor 放 `accel.device()`(uvt 无 accel 退 cuda),双仓字节一致。
+- **bug2 · pre_sharded 未转发**:`trainers/uvt_tokenizer_trainer.make_datasets` 的 `sources.append` 没把 cfg 的 `pre_sharded` 传给 JointLoader → DistributedSampler 仍叠加 → **二次分片(steps/epoch 掉到 2519=161236/64,每卡只训 1/8 数据)**。运行时用 steps/epoch 抓出。**修**:append 补 `pre_sharded`,双仓。修后 steps/epoch=19609 ✓。
+- **教训**:子agent 的隔离单测(CPU 模拟 rank、直接构造 JointLoader)测不出①设备后端 ②真实 trainer 装配链路 的 bug。**新数据/DDP 路径必须真机 8 卡冒烟 + 核对 steps/epoch 数值**才算数。
 
 ### P0(开局)· DAVIS/rFVD/rFID 评测缺口
 - **问题**:无 DAVIS 数据集、无 I3D 权重;ImageNet rFID 与 DAVIS/rFVD 尚不能算。

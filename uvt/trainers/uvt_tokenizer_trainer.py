@@ -125,7 +125,8 @@ class UVTTokenizerTrainer(BaseTrainer):
             self.log(f"Joint source: {s['dataset']['name']}, len={len(ds)}, "
                      f"bs={s['batch_size']}, ratio={s['ratio']}")
             sources.append({'dataset': ds, 'batch_size': int(s['batch_size']),
-                            'ratio': int(s['ratio']), 'name': s['dataset']['name']})
+                            'ratio': int(s['ratio']), 'name': s['dataset']['name'],
+                            'pre_sharded': bool(s.get('pre_sharded', False))})
         trace_path = osp.join(self.cfg['env']['save_dir'], 'sampling_trace.json')
         self.train_loader = JointLoader(
             sources, seed=int(jd.get('seed', 0)),
