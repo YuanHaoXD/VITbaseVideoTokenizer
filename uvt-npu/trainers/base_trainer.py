@@ -284,7 +284,13 @@ class BaseTrainer():
 
             self.starting_epoch = latest_ckt['epoch'] + 1
             if self.enable_wandb:
-                wandb.run._step = self.starting_epoch
+                # wandb 0.28+:run._step 只读,直接赋值抛 "Attribute _step is not supported"
+                # → 正是 full05 续跑 crash-loop 的根因。日志走 log_temp_scalar 的显式 step=,
+                # 此处对齐仅 best-effort:设得上就设,设不上跳过,绝不让它崩掉续跑。
+                try:
+                    wandb.run._step = self.starting_epoch
+                except Exception:
+                    pass
 
             if 'rng_states_per_rank' in latest_ckt and self.rank in latest_ckt['rng_states_per_rank']:
                 local_rng_state_dict = latest_ckt['rng_states_per_rank'][self.rank]

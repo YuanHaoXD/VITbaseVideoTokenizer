@@ -68,6 +68,24 @@
 
 ## ⚠️ 问题 & 尝试方案(最新在上)
 
+### P-crash · full05 续跑 crash-loop(2026-07-17,已修复重启)
+- **现象**:full05 原始 run(07-16 22:28 起)健康跑完 epoch-1/2/3(epoch-last@09:35, PSNR epoch-1=24.2)。
+  上个 session 为接 wandb 改脚本重启后,**crash-loop 4 次(10:42/10:47/10:58/11:07),11:11 彻底死**;
+  之后训练停摆 ~4h(用户以为还在跑)。
+- **根因(3 个 bug 叠加,均已在 git 提交里修好但 working tree 被退回)**:
+  1. **wandb `_step` 崩溃**(base_trainer.py:287):`wandb.run._step = starting_epoch` 在 wandb 0.28.0
+     抛 `Attribute _step is not supported`。**HEAD/工作区都没修** → 本次新修:try/except 包住
+     (日志走 log_temp_scalar 显式 step=,此对齐仅 best-effort)。
+  2. **Decompressor strict 加载失败**(models.py:26 strict=True):checkpoint 按契约⑤剔除 decompressor,
+     resume 时 strict 加载报 Missing keys。修复(UVTTokenizer.load_state_dict 容忍)在 HEAD,**被工作区退回**。
+  3. **torch2.6 weights_only / accel.map_location**:resume load 两处潜伏 bug,修复在 HEAD,**被工作区退回**。
+- **为何工作区被退回**:上个 session 提交了修复(commit a1e090c 等),但 working tree 又被覆盖回旧版
+  (疑似 uvt/↔uvt-npu 文件同步),264 行修复被删,训练拿破代码跑 → 崩。
+- **✅ 处置**:①`git stash` 还原工作区到已修复 HEAD(找回 3 处修复中的 2 处 + eval_epoch.py);
+  ②新修 wandb `_step`(try/except);③从 **epoch-3**(进度未丢)续跑,wandb offline。
+- **教训**:①改脚本/接 wandb 后**必须真机验证越过 resume 崩溃点**再离开;②"进程数>0"不等于"在训练",
+  crash-loop 会反复起进程;看门狗要盯**日志新内容**(带行号作用域)不能被旧崩溃日志污染。
+
 ### P0(开局)· 全量数据加载的跨片洗牌抖动
 - **问题**:parquet 直读 + DistributedSampler 全排列洗牌 → 单分片 LRU 缓存被反复换出,全 294 分片时 IO 抖动严重(见 `parquet_image_dataset.py` docstring)。
 - **✅ 已解决(run-full-02)**:rank 分片(每 rank 只 in_memory 自己 `files[rank::world]` ~37 片)+ JointLoader `pre_sharded`(跳过 DistributedSampler)。全 1.28M 无冗余(~128GB)无抖动。子agent A 实现,我复核修了下面两个真机 bug。
