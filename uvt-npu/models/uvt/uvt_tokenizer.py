@@ -128,6 +128,20 @@ class UVTTokenizer(nn.Module, PyTorchModelHubMixin):
     def device(self) -> torch.device:
         return next(self.parameters()).device
 
+    # ------------------------------------------------------------------ 加载（契约⑤对称：容忍 Decompressor 缺失）
+    def load_state_dict(self, state_dict, strict: bool = True, assign: bool = False):
+        """续跑/评测加载。Decompressor 被 state_dict post-hook 蓄意剔除（train-only，每次随机重建），
+        故 checkpoint 里没有 `decompressor.*` 键——加载时对其缺失宽容;但**其余键仍严格**
+        （非 decompressor 的 missing / 任何 unexpected 仍报错，不掩盖真实架构失配）。
+        与 _strip_decompressor_hook 对称：剔除它的模型也容忍它缺失。"""
+        result = super().load_state_dict(state_dict, strict=False, assign=assign)
+        if strict:
+            bad_missing = [k for k in result.missing_keys if not k.startswith("decompressor.")]
+            assert not bad_missing and not result.unexpected_keys, (
+                f"UVTTokenizer.load_state_dict: 非预期 missing={bad_missing[:5]} "
+                f"unexpected={list(result.unexpected_keys)[:5]}")
+        return result
+
     # ------------------------------------------------------------------ 前向分派（DDP 契约③）
     def forward(self, video: torch.Tensor) -> dict:
         """训练态 → forward_train；推理态 → _inference。DDP 只 hook forward，故必须经此分派。"""
