@@ -97,3 +97,15 @@
 4. KL {1e-6, 1e-5} —— 确认 1e-6 最优。
 5. Stage-1 达 ~31 后 → **Stage-2 GAN**(decoder-only,守 PSNR、攻 rFID 0.33)。
 > 算力约束:8 卡=同时仅 1 个全量 run,收敛 ~数天/run → 消融只能少数几个 + 或用早期轨迹对比(不够定论但有信息)。优先把 run-full-03 跑到收敛出真实指标,再决定下一步。
+
+---
+
+## 📊 full05 留出集 eval(阶段性检查 · eval_epoch.py 自动追加)
+
+> 由 `scripts/eval_epoch.py` 在【ImageNet test-* 留出集】上跑**确定性**(sample=False)重建评测;
+> 每个 checkpoint(epoch 完成/暂停时)评一次,对比图存 `logs/eval/<tag>/`。
+> 与训练进度条的 psnr(训练集即时估计、sample=True)**不同口径**——这个才是正式泛化指标。
+> 计划:epoch-5 暂停时首评;之后每(几)epoch 一评,肉眼看对比图 + 看指标是否 plateau 决定何时停。
+
+| run/epoch | epoch | PSNR↑ | SSIM↑ | rFID↓ | n | mode | 对比图 |
+|---|---|---|---|---|---|---|---|

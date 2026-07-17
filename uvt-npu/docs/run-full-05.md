@@ -39,6 +39,20 @@
 3. [持续] PSNR 爬升轨迹(full03/04 经验: epoch-1 内到 18-19)。
 
 ## 进度日志(每次巡检追加)
+- **2026-07-17 10:42 为补 wandb 重启,撞出续跑潜伏 bug(torch 2.6 weights_only)。**
+  - 背景:用户要求 wandb,原启动漏了 `-w`。改 launch_full05.sh 去 `--replace`(避免删盘)+ 加
+    `-w --wandb_project uvt-full05 --wandn_entity yuanhao` + `WANDB_MODE=offline`,从 epoch-3 续跑。
+  - **崩溃**:`base_trainer.py:271` 续跑 `torch.load(epoch-last.pth)` →
+    `UnpicklingError: Unsupported global easydict.EasyDict`。**torch 2.6 的 `torch.load` 默认
+    `weights_only=True`,挡了 checkpoint 里的 EasyDict(config)。**
+  - **含义**:存盘(save)之前验过成功,但**续跑(load)路径从没在 torch2.6 上跑过**——今天首次续跑才暴露。
+    与 wandb 改动无关,任何续跑都会撞。**checkpoint 保存 bug ≠ 加载 bug,是两条独立的路。**
+  - **修复**:3 处 `torch.load` 加 `weights_only=False`(可信自存 checkpoint):
+    base_trainer.py:271(续跑)、:302(预训练 init)、eval_epoch.py:111(评测加载)。
+    → eval_epoch.py 同 bug 幸好一并发现(tiny 冒烟不加载 ckpt 故没暴露,epoch-5 真评时会同样崩)。
+  - ⚠️ 待办:同步到 uvt/(CUDA 参考仓)的 base_trainer——同样潜伏 torch2.6 续跑 bug(framework 层,允许分叉但应记)。
+  - 10:47 修复后重新续跑(验证中)。
+
 - **2026-07-16 22:30 启动成功**。setsid 挂起(主进程 PPID=1,已脱离终端,断连不停)。
   - 数据集: `Joint source: parquet_image_dataset, len=161236`(真实 ImageNet,非假数据)✓
   - 8 卡 HCCL DDP 全部在算(HBM 4-8GB)✓ 无报错 ✓

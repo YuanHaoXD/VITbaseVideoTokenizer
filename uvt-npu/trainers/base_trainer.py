@@ -268,7 +268,9 @@ class BaseTrainer():
         if os.path.exists(resume_ckt_path):
             # resume training from a checkpoint
             self.log(f'Resuming training from {resume_ckt_path}')
-            latest_ckt = torch.load(resume_ckt_path, map_location=map_location_fn)
+            # weights_only=False:torch 2.6 默认 True 会挡 checkpoint 里的 EasyDict(config)→UnpicklingError。
+            # 我们自己存的可信 checkpoint,显式关掉安全限制(续跑 load 路径,torch2.6 潜伏 bug)。
+            latest_ckt = torch.load(resume_ckt_path, map_location=map_location_fn, weights_only=False)
             if 'wandb_run_id' in latest_ckt:
                 wandb_run_id = latest_ckt['wandb_run_id']
             self.enable_wandb_if_needed(wandb_run_id)
@@ -299,7 +301,7 @@ class BaseTrainer():
             self.enable_wandb_if_needed()
             if self.init_checkpoint is not None and os.path.exists(self.init_checkpoint):
                 self.log(f'Initializing model from {self.init_checkpoint}')
-                init_ckt = torch.load(self.init_checkpoint)
+                init_ckt = torch.load(self.init_checkpoint, weights_only=False)  # torch2.6:同上,可信 checkpoint
                 model_spec = deepcopy(self.cfg['model'])
                 model_spec['sd'] = init_ckt['model']['sd']
                 self.init_checkpoint = ''

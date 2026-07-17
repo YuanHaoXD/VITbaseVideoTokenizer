@@ -158,6 +158,7 @@ def map_location_fn(storage, loc):
     if not is_available():
         return storage
     if loc.startswith(BACKEND):
-        return storage.to(device(current_device()))
+        # torch 2.6:_StorageBase.to(dev) 位置参数失效(TypeError),须关键字 device=(实测 npu/cuda 均可)。
+        return storage.to(device=device(current_device()))
     # 其它来源（如 cpu 保存的 ckpt）原样返回，由后续 .to(self.device) 搬运
     return storage

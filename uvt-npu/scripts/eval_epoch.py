@@ -108,7 +108,7 @@ def build_model(args, dev):
         tok = UVTTokenizer(cfg).to(dev).eval()
         return tok, -1
 
-    ckt = torch.load(args.ckpt, map_location="cpu")
+    ckt = torch.load(args.ckpt, map_location="cpu", weights_only=False)  # torch2.6:checkpoint 含 EasyDict,需关 weights_only
     epoch = int(ckt.get("epoch", -1))
     spec = ckt["model"]                       # {name, args, sd}
     sd = spec["sd"]
