@@ -55,4 +55,30 @@
   - 注:日志有 torch_npu `_use_new_zipfile_serialization` **告警**(非错误),存盘正常完成。
   - checkpoint 保存 bug(commit 22a7d1f)**在真实 8 卡全量训练上验收通过**。
 
+- **2026-07-17 10:03 巡检 · PSNR 爬升健康**。
+  - epoch-1=24.2 → epoch-2/3 存盘正常(09:35 epoch-last 滚动)→ **epoch-4 进行中 PSNR≈29.4**。
+  - 稳定 ~1.55 it/s,进程 81,零报错,已连续跑 ~11.5h。
+  - **坐标校准**:论文 ImageNet 重建 PSNR 表1≈31.1~31.7 / 表9(S3)32.04;当前仅 Stage-1、
+    epoch-4/60、且训练态 `sample=True`(压低 PSNR)——已逼近论文门口,真实上限预计更高。
+  - **caveat**:此为训练集即时 PSNR(非 eval 协议 val);cfg 的 lpips/cos=0.5 是 full-03 为 PSNR
+    主动下调,偏向 PSNR 好看,rFID/感知需 Stage-2 GAN 补;质量须 PSNR+rFID 合看。
+
+## 为什么 60 epoch(依据)
+- 论文 Stage-1 = **300k iterations**(附录 A.2);Table-1 那个 31.73 的重建消融用 ~150k–300k iter。
+- 本 run 算账:19609 micro-batch/epoch ÷ grad_accum 4 = **4902 优化器step/epoch**;
+  **60 epoch × 4902 ≈ 294k 优化器step ≈ 论文 300k**(精确对齐要 61.2 epoch,60 是取整)。
+- ⚠️ **时间尺度:~0.39 opt-step/s → 60 epoch(294k)≈ 9 天**(多天级长跑,TRAINING_LOG §58 已记)。
+- 推论:60 是"跑满论文预算"的上限;**不一定要跑满**——Table-1 在 150k(≈30 epoch)就出好结果,
+  应靠周期 eval 看何时 plateau 提前停,而非盲跑 60。
+
+## ⚠️ eval 现状:当前【没有】留出集 eval(训练在"盲跑")
+- cfg `eval_epoch: 100000000` = **周期 eval 关闭**;原因:test_dataset 无真实 csv(ucf101_val 空)+
+  FVD i3d 模型缺失(FVDCalculator init failed)。
+- trainer **有** eval 机制(uvt_tokenizer_trainer.evaluate_step:412 + PSNR/SSIM/FVD),只是没接 val 集。
+- 现在只有进度条的**训练集即时 PSNR**,没有 held-out 的 PSNR/SSIM/rFID → 无法判断泛化/何时停。
+- 可用素材:ImageNet `test-*.parquet`(28分片,可作留出集)+ `eval/recon_metrics.py`/`protocols.py`。
+- **待决策(见下)**:补周期 eval 的方式(改配重启接 val / 离线评 checkpoint),及 cadence(每 epoch / 每 5 epoch)。
+
+
+
 
